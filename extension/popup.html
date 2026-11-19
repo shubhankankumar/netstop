@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetStop</title>
+  <meta name="description" content="What this laptop sent and received on one day, by program.">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body class="popup">
+  <header class="bar">
+    <button class="key" id="prev" type="button">Earlier</button>
+    <h1 id="day">Today</h1>
+    <button class="key" id="next" type="button">Later</button>
+  </header>
+  <main id="main" aria-live="polite">
+    <noscript><p class="state">NetStop needs scripts on to read your report.</p></noscript>
+    <div class="state skeleton" id="loading"><span></span><span></span><span></span></div>
+  </main>
+  <footer class="foot">
+    <p class="status" id="status"></p>
+    <button class="key primary" id="open" type="button">Open full report</button>
+  </footer>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

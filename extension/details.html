@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetStop report</title>
+  <meta name="description" content="Every program, site and connection this laptop used on one day.">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body class="details">
+  <header class="top">
+    <div class="wrap top-row">
+      <h1>NetStop</h1>
+      <nav class="days" id="days" aria-label="Day"></nav>
+      <button class="key" id="csv" type="button">Export CSV</button>
+    </div>
+  </header>
+  <main class="wrap" id="main" aria-live="polite">
+    <noscript><p class="state">NetStop needs scripts on to read your report.</p></noscript>
+    <div class="state skeleton"><span></span><span></span><span></span></div>
+  </main>
+  <script src="shared.js"></script>
+  <script src="details.js"></script>
+</body>
+</html>
