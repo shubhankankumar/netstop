@@ -34,7 +34,7 @@ fn main() {
         "" => {
             if !winutil::is_admin() {
                 if !winutil::relaunch_elevated("") {
-                    message("NetStop needs administrator rights to see network traffic.");
+                    message("NetStop needs administrator rights to see network traffic.", false);
                 }
                 return;
             }
@@ -57,10 +57,10 @@ fn main() {
             } else {
                 let r = if first == "install" { install::install() } else { install::uninstall() };
                 match &r {
-                    Ok(m) => message(m),
+                    Ok(m) => message(m, true),
                     Err(e) => message(&format!("NetStop {first} failed:
 
-{e}")),
+{e}"), false),
                 }
                 r.map(|m| println!("{m}"))
             }
@@ -73,7 +73,7 @@ fn main() {
     };
     if let Err(e) = result {
         if first.is_empty() {
-            message(&e);
+            message(&e, false);
         } else {
             eprintln!("netstop: {e}");
         }
@@ -81,10 +81,11 @@ fn main() {
     }
 }
 
-fn message(text: &str) {
-    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
+fn message(text: &str, ok: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MessageBoxW};
     use windows::core::HSTRING;
+    let icon = if ok { MB_ICONINFORMATION } else { MB_ICONWARNING };
     unsafe {
-        MessageBoxW(None, &HSTRING::from(text), &HSTRING::from("NetStop"), MB_OK | MB_ICONWARNING);
+        MessageBoxW(None, &HSTRING::from(text), &HSTRING::from("NetStop"), MB_OK | icon);
     }
 }

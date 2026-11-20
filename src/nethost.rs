@@ -68,8 +68,15 @@ pub fn answer(raw: &[u8]) -> String {
             Err(e) => return err(&e),
         };
         if !req.detail {
-            day.apps.truncate(8);
-            day.hosts.truncate(8);
+            // Popup: top sites plus the first few new ones; true counts are in hosts_total / new_hosts.
+            let mut new_seen = 0;
+            let mut i = 0;
+            day.hosts.retain(|h| {
+                i += 1;
+                new_seen += h.is_new as usize;
+                i <= 8 || (h.is_new && new_seen <= 2)
+            });
+            day.apps.truncate(300);
             day.night.truncate(5);
         }
         let s = serde_json::to_string(&day).unwrap_or_else(|_| err("encode failed"));

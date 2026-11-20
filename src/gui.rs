@@ -108,7 +108,8 @@ pub struct App {
     labels: HashMap<Arc<str>, String>,
     renames: HashMap<String, String>,
     selected: Option<Arc<str>>,
-    blocked: HashSet<String>,
+    /// Names of NetStop's rules in Windows Firewall (the source of truth for "blocked").
+    fw_rules: HashSet<String>,
     // feed
     filter: String,
     small_only: bool,
@@ -117,11 +118,15 @@ pub struct App {
     day_idx: usize,
     day: Option<Result<Day, String>>,
     day_at: Instant,
+    day_job: Option<Receiver<Result<Day, String>>>,
     // misc
     renaming: Option<(String, String)>,
     status: String,
-    jobs: (Sender<(String, bool, Result<(), String>)>, Receiver<(String, bool, Result<(), String>)>),
+    jobs: (Sender<BlockJob>, Receiver<BlockJob>),
 }
+
+/// (app, block?, result, firewall rules afterwards)
+type BlockJob = (String, bool, Result<(), String>, Option<HashSet<String>>);
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -138,7 +143,8 @@ impl App {
             Err(e) => (None, Some(format!("Live capture failed to start: {e}"))),
         };
         let db = crate::db::open_rw().ok();
-        let (renames, blocked) = db.as_ref().map(|c| (crate::db::names(c), crate::db::blocked(c).into_iter().collect())).unwrap_or_default();
+        let renames = db.as_ref().map(crate::db::names).unwrap_or_default();
+        let fw_rules = crate::firewall::rules().unwrap_or_default();
         App {
             live,
             _trace: trace,
@@ -155,13 +161,14 @@ impl App {
             labels: HashMap::new(),
             renames,
             selected: None,
-            blocked,
+            fw_rules,
             filter: String::new(),
             small_only: false,
             paused: None,
             day_idx: 0,
             day: None,
             day_at: Instant::now(),
+            day_job: None,
             renaming: None,
             status: String::new(),
             jobs: channel(),
@@ -209,17 +216,12 @@ impl App {
         let wire = ((tx.saturating_sub(ptx) as f64 / secs) as u64, (rx.saturating_sub(prx) as f64 / secs) as u64);
         self.other = (wire.0.saturating_sub(au), wire.1.saturating_sub(ad));
 
-        while let Ok((app, block, res)) = self.jobs.1.try_recv() {
+        while let Ok((app, block, res, rules)) = self.jobs.1.try_recv() {
+            if let Some(r) = rules {
+                self.fw_rules = r;
+            }
             match res {
                 Ok(()) => {
-                    if let Some(c) = &self.db {
-                        let _ = crate::db::set_blocked(c, &app, block);
-                    }
-                    if block {
-                        self.blocked.insert(app.clone());
-                    } else {
-                        self.blocked.remove(&app);
-                    }
                     let n = self.name(&Arc::from(app.as_str()));
                     self.status = format!("{} {n}", if block { "Blocked" } else { "Unblocked" });
                 }
@@ -229,13 +231,13 @@ impl App {
     }
 
     fn toggle_block(&mut self, app: &str) {
-        let block = !self.blocked.contains(app);
+        let block = !crate::firewall::is_blocked(&self.fw_rules, app);
         let tx = self.jobs.0.clone();
         let app = app.to_string();
         self.status = format!("{}…", if block { "Blocking" } else { "Unblocking" });
         std::thread::spawn(move || {
             let r = crate::firewall::set_blocked(&app, block);
-            let _ = tx.send((app, block, r));
+            let _ = tx.send((app, block, r, crate::firewall::rules().ok()));
         });
     }
 
@@ -244,7 +246,7 @@ impl App {
             ui.weak("—").on_hover_text("Windows itself, or a program that already closed");
             return;
         }
-        let blocked = self.blocked.contains(key);
+        let blocked = crate::firewall::is_blocked(&self.fw_rules, key);
         let text = if blocked { "Unblock" } else { "Block" };
         if ui.small_button(text).on_hover_text(if blocked { "Allow internet again" } else { "Stop this program sending anything" }).clicked() {
             self.toggle_block(key);
@@ -475,18 +477,38 @@ impl App {
                 if ui.selectable_label(self.day_idx == i, label).clicked() && self.day_idx != i {
                     self.day_idx = i;
                     self.day = None;
+                    self.day_job = None; // drop a result for the previous day
                 }
             }
             if ui.button("Refresh").clicked() {
                 self.day = None;
             }
         });
-        if self.day.is_none() || (self.day_idx == 0 && self.day_at.elapsed() > Duration::from_secs(30)) {
-            self.day = Some(match &self.db {
-                Some(c) => report::day(c, &days[self.day_idx], 100_000),
-                None => Err("Database not available".into()),
+        if let Some(rx) = &self.day_job {
+            if let Ok(d) = rx.try_recv() {
+                self.day = Some(d);
+                self.day_job = None;
+            }
+        }
+        let stale = self.day.is_none() || (self.day_idx == 0 && self.day_at.elapsed() > Duration::from_secs(30));
+        if stale && self.day_job.is_none() {
+            // Built on a worker thread with its own read-only connection, so the window never stalls.
+            let (tx, rx) = channel();
+            let date = days[self.day_idx].clone();
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let r = crate::db::open_ro()
+                    .map_err(|_| "No history yet. Install the recorder: run `netstop install` as admin.".to_string())
+                    .and_then(|c| report::day(&c, &date, 100_000));
+                let _ = tx.send(r);
+                ctx.request_repaint();
             });
+            self.day_job = Some(rx);
             self.day_at = Instant::now();
+        }
+        if self.day.is_none() {
+            ui.spinner();
+            return;
         }
         let day = match self.day.take() {
             Some(Ok(d)) => d,
@@ -661,12 +683,16 @@ impl App {
     }
 
     fn tab_blocked(&mut self, ui: &mut egui::Ui) {
-        if self.blocked.is_empty() {
-            ui.label("Nothing is blocked. Use Block next to a program in Now or Report.");
+        if ui.button("Refresh").clicked() {
+            self.fw_rules = crate::firewall::rules().unwrap_or_default();
+        }
+        // Rule names are "NetStop block: <path>" or "...: <svchost path>|<one service>".
+        let mut list: Vec<String> = self.fw_rules.iter().filter_map(|r| r.strip_prefix("NetStop block: ").map(str::to_string)).collect();
+        if list.is_empty() {
+            ui.label("Nothing is blocked. Use Block next to a program in Now or Last 7 days.");
             return;
         }
         ui.weak("These are Windows Firewall rules named \"NetStop block: …\". You can also remove them in Windows Firewall.");
-        let mut list: Vec<String> = self.blocked.iter().cloned().collect();
         list.sort();
         for app in list {
             let key: Arc<str> = Arc::from(app.as_str());
@@ -831,6 +857,10 @@ fn export_csv(day: &Day) -> Result<String, String> {
 }
 
 pub fn run() -> Result<(), String> {
+    // Two windows would fight over the one live-capture session name.
+    let Some(_one) = crate::winutil::single_instance(r"Global\NetStopWindow") else {
+        return Err("NetStop is already open.".into());
+    };
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("NetStop").with_inner_size([1040.0, 700.0]).with_min_inner_size([720.0, 420.0]),
         ..Default::default()

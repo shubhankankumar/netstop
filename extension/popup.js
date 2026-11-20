@@ -44,7 +44,7 @@ async function load() {
     el("thead", {}, el("tr", {}, el("th", { scope: "col" }, "Program"), el("th", { scope: "col", class: "num" }, "Sent"), el("th", { scope: "col", class: "num" }, "Received"))),
     el("tbody", {}, ...rows));
 
-  const more = day.apps.length > 6 ? el("p", { class: "more" }, `${day.apps.length - 6} more programs, ${day.hosts.length} sites in the full report`) : null;
+  const more = day.apps.length > 6 ? el("p", { class: "more" }, `${day.apps.length - 6} more programs, ${day.hosts_total} sites in the full report`) : null;
   main.replaceChildren(totals, hourStrip(day.hours), list, table, more);
 }
 

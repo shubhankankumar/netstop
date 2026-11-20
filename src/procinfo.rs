@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA, HWND, LPARAM};
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC};
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, GetUnicastIpAddressTable, MIB_IF_TABLE2, MIB_UNICASTIPADDRESS_TABLE};
 use windows::Win32::System::Services::{
@@ -14,13 +14,13 @@ use windows::Win32::System::Services::{
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible};
-use windows::core::{BOOL, PCWSTR, PWSTR};
+use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR};
 
-// shortcut: a PID is re-resolved after 60 s idle; a PID reused by a new process inside that window keeps the old name.
-const TTL: Duration = Duration::from_secs(60);
-
+/// PID -> app key. An entry is replaced when Windows reports a new process with that PID
+/// (`started`), so a reused PID never keeps the old name. svchost entries are re-checked
+/// because services move in and out of shared hosts.
 pub struct Resolver {
-    cache: HashMap<u32, (Arc<str>, Instant)>,
+    cache: HashMap<u32, (Arc<str>, Option<Instant>)>,
     services: HashMap<u32, Vec<String>>,
     services_at: Option<Instant>,
 }
@@ -32,41 +32,64 @@ impl Resolver {
 
     pub fn resolve(&mut self, pid: u32) -> Arc<str> {
         let now = Instant::now();
-        if let Some((k, t)) = self.cache.get_mut(&pid) {
-            if now.duration_since(*t) < TTL {
-                *t = now;
+        if let Some((k, recheck)) = self.cache.get(&pid) {
+            if recheck.is_none_or(|t| now < t) {
                 return k.clone();
             }
         }
-        let key: Arc<str> = match pid {
-            0 | 4 => Arc::from("System"),
-            _ => match image_path(pid) {
+        self.lookup(pid, None, now)
+    }
+
+    /// A process just started. `nt_image` is its kernel path, used if it has already exited.
+    pub fn started(&mut self, pid: u32, nt_image: &str) {
+        self.lookup(pid, Some(nt_image), Instant::now());
+    }
+
+    fn lookup(&mut self, pid: u32, nt_image: Option<&str>, now: Instant) -> Arc<str> {
+        let (key, recheck): (Arc<str>, Option<Instant>) = match pid {
+            0 | 4 => (Arc::from("System"), None),
+            _ => match image_path(pid).or_else(|| nt_image.and_then(dos_path)) {
                 Some(p) if p.to_ascii_lowercase().ends_with("\\svchost.exe") => {
                     if !self.services.contains_key(&pid) && self.services_at.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
                         self.services = service_pids();
                         self.services_at = Some(now);
                     }
                     match self.services.get(&pid) {
-                        Some(s) => Arc::from(format!("{p}|{}", s.join(","))),
-                        None => Arc::from(p),
+                        Some(s) => (Arc::from(format!("{p}|{}", s.join(","))), Some(now + Duration::from_secs(60))),
+                        None => (Arc::from(p), Some(now + Duration::from_secs(5))),
                     }
                 }
-                Some(p) => Arc::from(p),
-                None => Arc::from(format!("pid:{pid}")),
+                Some(p) => (Arc::from(p), None),
+                None => (Arc::from(format!("pid:{pid}")), None),
             },
         };
-        if self.cache.len() > 4096 {
-            self.cache.retain(|_, (_, t)| now.duration_since(*t) < TTL);
+        // shortcut: wipe at 16k PIDs instead of tracking exits; only names of long-ended processes are lost.
+        if self.cache.len() > 16_384 {
+            self.cache.clear();
         }
-        self.cache.insert(pid, (key.clone(), now));
+        self.cache.insert(pid, (key.clone(), recheck));
         key
     }
+}
+
+/// `\Device\HarddiskVolume3\x\a.exe` -> `C:\x\a.exe` (kernel paths from process-start events).
+fn dos_path(nt: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{GetLogicalDrives, QueryDosDeviceW};
+    let drives = unsafe { GetLogicalDrives() };
+    (0..26u8).filter(|i| drives & (1 << i) != 0).find_map(|i| {
+        let letter = format!("{}:", (b'A' + i) as char);
+        let mut buf = [0u16; 512];
+        let n = unsafe { QueryDosDeviceW(&HSTRING::from(letter.as_str()), Some(&mut buf)) } as usize;
+        let dev = String::from_utf16_lossy(buf[..n].split(|&c| c == 0).next()?);
+        let rest = nt.strip_prefix(dev.as_str()).filter(|r| !dev.is_empty() && r.starts_with('\\'))?;
+        Some(format!("{letter}{rest}"))
+    })
 }
 
 pub fn image_path(pid: u32) -> Option<String> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = [0u16; 1024];
+        let mut buf = vec![0u16; 32 * 1024]; // long-path limit
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
         let _ = CloseHandle(h);
@@ -79,10 +102,12 @@ fn service_pids() -> HashMap<u32, Vec<String>> {
     let mut out: HashMap<u32, Vec<String>> = HashMap::new();
     unsafe {
         let Ok(scm) = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ENUMERATE_SERVICE) else { return out };
-        let mut buf = vec![0u8; 256 * 1024];
+        // u64 buffer so the structs read out of it are aligned.
+        let mut buf = vec![0u64; 32 * 1024];
         let (mut needed, mut count, mut resume) = (0u32, 0u32, 0u32);
         loop {
-            let r = EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_ACTIVE, Some(&mut buf), &mut needed, &mut count, Some(&mut resume), PCWSTR::null());
+            let bytes = std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 8);
+            let r = EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_ACTIVE, Some(bytes), &mut needed, &mut count, Some(&mut resume), PCWSTR::null());
             let items = std::slice::from_raw_parts(buf.as_ptr() as *const ENUM_SERVICE_STATUS_PROCESSW, count as usize);
             for it in items {
                 let pid = it.ServiceStatusProcess.dwProcessId;
@@ -90,11 +115,13 @@ fn service_pids() -> HashMap<u32, Vec<String>> {
                     out.entry(pid).or_default().push(it.lpServiceName.to_string().unwrap_or_default());
                 }
             }
-            // ERROR_MORE_DATA: grow and continue from `resume`.
-            if r.is_ok() || needed == 0 {
-                break;
+            // Only ERROR_MORE_DATA means "grow and continue from `resume`"; any other error ends it.
+            match r {
+                Err(e) if e.code() == ERROR_MORE_DATA.to_hresult() && buf.len() < 1024 * 1024 => {
+                    buf.resize(buf.len().max(needed as usize / 8 + 1), 0);
+                }
+                _ => break,
             }
-            buf.resize(buf.len().max(needed as usize * 2), 0);
         }
         let _ = CloseServiceHandle(scm);
     }

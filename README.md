@@ -14,7 +14,7 @@ cargo build --release
 .\target\release\netstop.exe install
 ```
 
-`install` copies the exe to `C:\Program Files\NetStop`, locks down `C:\ProgramData\NetStop` (data folder), registers the boot-time recorder and the browser bridge. After that, run `C:\Program Files\NetStop\netstop.exe` (pin it to Start) to open the window.
+`install` copies the exe to `C:\Program Files\NetStop`, locks down `C:\ProgramData\NetStop` (data folder), registers the boot-time recorder and the browser bridge. After that, open **NetStop** from the Start menu.
 
 Extension: open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the `extension` folder. Its ID is fixed (`extension/ID`), and the bridge only answers that ID.
 
@@ -22,7 +22,8 @@ Remove everything: `netstop uninstall` (admin). This also deletes the data and e
 
 ## How the counting works
 
-- Per-program bytes come from Windows' own kernel network events (ETW, `Microsoft-Windows-Kernel-Network`): one event per TCP/UDP send or receive, with the process ID and payload size. No driver is installed and nothing sits in the data path.
+- Per-program bytes come from Windows' own kernel network events (ETW, `Microsoft-Windows-Kernel-Network`): one event per TCP/UDP send or receive, with the process ID, payload size and the kernel's own timestamp. No driver is installed and nothing sits in the data path.
+- Every process is named the moment it starts (`Microsoft-Windows-Kernel-Process` events), so programs that run for a split second are still named, and a reused process ID never inherits an old name.
 - IPs become names from Windows' DNS-Client events (`chrome.exe → youtube.com`). Apps that use their own encrypted DNS (Chrome's "Secure DNS", Firefox DoH) show IP addresses instead.
 - The "Headers, ping, ARP and other" line is the Wi-Fi/Ethernet adapter total minus everything attributed to programs, so the window always adds up to what really went over the wire.
 - Traffic between the laptop and itself (localhost) is ignored: it never leaves the machine.
@@ -32,13 +33,15 @@ Remove everything: `netstop uninstall` (admin). This also deletes the data and e
 
 - No network access and no listening ports anywhere. The browser bridge is Chrome native messaging (stdin/stdout), not a local web server, so web pages cannot reach it.
 - The bridge opens the database read-only, accepts one JSON request shape up to 4 KB, and checks the caller is the NetStop extension.
-- The boot task points only at the copy in Program Files (admin-only writable). The data folder's owner and permissions are reset at install: admins and SYSTEM can write, users can only read.
-- Blocking uses the Windows Firewall COM API (no shell commands). Rules are named `NetStop block: …` and are visible in Windows Firewall.
+- The boot task points only at the copy in Program Files (admin-only writable).
+- Only `install` creates the data folder. Anyone can create folders in ProgramData, so if one already exists and isn't owned by Administrators or SYSTEM, install deletes it first. That way, planted links can't redirect SYSTEM's writes. Afterwards admins and SYSTEM can write, and users can only read.
+- The recorder's single-instance lock is a file users can't open at all, so another account can't stop recording by holding it.
+- Blocking uses the Windows Firewall COM API (no shell commands). Rules are named `NetStop block: …` and are visible in Windows Firewall. The firewall is the only record of what is blocked, and uninstall removes every rule with that name.
 - The extension asks for one permission (`nativeMessaging`), runs under a strict content security policy, loads no remote code or fonts, and places all text with `textContent`.
 - CSV exports prefix values that a spreadsheet would run as formulas.
 
 ## Build notes
 
-This machine has no Visual Studio build tools, so `rust-toolchain.toml` selects the GNU toolchain and the MSYS2 `gcc` on PATH. With Visual Studio Build Tools installed, delete `rust-toolchain.toml` to build with MSVC instead.
+Without Visual Studio build tools, use the GNU toolchain with MSYS2's `gcc` on PATH: run `rustup override set stable-x86_64-pc-windows-gnu` once in this folder. With Visual Studio Build Tools installed, plain `cargo build --release` works.
 
 `cargo test` covers names, the report queries, DNS parsing, the bridge's input checks, firewall rule names and CSV escaping. Live capture needs admin rights, so test it by running the window.

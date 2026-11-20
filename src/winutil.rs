@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Shell::{FOLDERID_Downloads, FOLDERID_ProgramData, FOLDERID_ProgramFiles, IsUserAnAdmin, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath, ShellExecuteW};
+use windows::Win32::UI::Shell::{FOLDERID_CommonPrograms, FOLDERID_Downloads, FOLDERID_ProgramData, FOLDERID_ProgramFiles, IsUserAnAdmin, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{GUID, HSTRING, PCWSTR};
 
@@ -35,6 +35,31 @@ pub fn program_files() -> PathBuf {
 
 pub fn downloads() -> PathBuf {
     known_folder(&FOLDERID_Downloads, ".")
+}
+
+/// All-users Start menu "Programs" folder.
+pub fn common_programs() -> PathBuf {
+    known_folder(&FOLDERID_CommonPrograms, r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs")
+}
+
+/// Writes a .lnk at `lnk` that opens `target`.
+pub fn create_shortcut(lnk: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::Interface;
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let r = (|| {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            link.SetPath(&HSTRING::from(target.as_os_str()))?;
+            link.SetDescription(&HSTRING::from("See and block what each program sends and receives"))?;
+            link.cast::<IPersistFile>()?.Save(&HSTRING::from(lnk.as_os_str()), true)
+        })();
+        if init.is_ok() {
+            CoUninitialize();
+        }
+        r.map_err(|e| e.message().to_string())
+    }
 }
 
 /// Absolute path to a System32 tool, so a planted exe on PATH can't be run instead.

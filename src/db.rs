@@ -22,14 +22,15 @@ CREATE TABLE IF NOT EXISTS traffic(
   PRIMARY KEY(minute, app, host, port, proto)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS apps(app TEXT PRIMARY KEY, label TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS names(app TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS blocked(app TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS traffic_app ON traffic(app, minute);
+CREATE INDEX IF NOT EXISTS traffic_host ON traffic(host, minute);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v INTEGER NOT NULL) WITHOUT ROWID;
 ";
 
-/// Read-write; creates the folder and schema. Used by the recorder and the (elevated) window.
+/// Read-write; creates the schema. Used by install, the recorder and the (elevated) window.
+/// Never creates the folder: only `install` does, with locked-down permissions.
 pub fn open_rw() -> rusqlite::Result<Connection> {
-    let _ = std::fs::create_dir_all(data_dir());
-    let c = Connection::open(db_path())?;
+    let c = Connection::open_with_flags(db_path(), OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
     c.busy_timeout(Duration::from_secs(5))?;
     c.execute_batch(SCHEMA)?;
     Ok(c)
@@ -97,19 +98,4 @@ pub fn names(c: &Connection) -> HashMap<String, String> {
         }
     }
     out
-}
-
-pub fn blocked(c: &Connection) -> Vec<String> {
-    c.prepare("SELECT app FROM blocked ORDER BY app")
-        .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
-        .unwrap_or_default()
-}
-
-pub fn set_blocked(c: &Connection, app: &str, on: bool) -> rusqlite::Result<()> {
-    if on {
-        c.execute("INSERT OR IGNORE INTO blocked(app) VALUES(?1)", [app])?;
-    } else {
-        c.execute("DELETE FROM blocked WHERE app=?1", [app])?;
-    }
-    Ok(())
 }

@@ -16,6 +16,10 @@ pub fn install_dir() -> PathBuf {
     program_files().join("NetStop")
 }
 
+fn shortcut() -> PathBuf {
+    crate::winutil::common_programs().join("NetStop.lnk")
+}
+
 fn run(exe: &str, args: &[&str]) -> Result<(), String> {
     let out = Command::new(system32(exe)).args(args).output().map_err(|e| format!("{exe}: {e}"))?;
     if out.status.success() {
@@ -47,6 +51,35 @@ fn task_xml(exe: &Path) -> String {
     )
 }
 
+/// Any user can create folders in ProgramData, so an existing data folder may have been planted
+/// (with links inside that would redirect SYSTEM's writes or icacls). Keep it only if it is a real
+/// folder owned by Administrators or SYSTEM, which only a previous install can produce.
+fn data_dir_trusted(dir: &Path) -> Result<bool, String> {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows::Win32::Security::{IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinBuiltinAdministratorsSid, WinLocalSystemSid};
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e.to_string()),
+    };
+    if !meta.is_dir() || meta.file_attributes() & 0x400 != 0 {
+        return Ok(false); // a file, junction or symlink
+    }
+    unsafe {
+        let mut owner = PSID::default();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let r = GetNamedSecurityInfoW(&HSTRING::from(dir.as_os_str()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Some(&mut owner), None, None, None, &mut sd);
+        if r != ERROR_SUCCESS {
+            return Err(format!("read owner of {}: {r:?}", dir.display()));
+        }
+        let ok = IsWellKnownSid(owner, WinBuiltinAdministratorsSid).as_bool() || IsWellKnownSid(owner, WinLocalSystemSid).as_bool();
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        Ok(ok)
+    }
+}
+
 pub fn install() -> Result<String, String> {
     if !crate::winutil::is_admin() {
         return Err("Run this from an Administrator terminal.".into());
@@ -72,22 +105,22 @@ pub fn install() -> Result<String, String> {
     }
 
     let data = crate::db::data_dir();
-    std::fs::create_dir_all(&data).map_err(|e| format!("create {}: {e}", data.display()))?;
-    // Any user can create folders in ProgramData, so the folder may have been planted. Refuse a
-    // junction/symlink (would redirect SYSTEM's writes), then take ownership and reset all ACLs.
-    let meta = std::fs::symlink_metadata(&data).map_err(|e| e.to_string())?;
-    {
-        use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes() & 0x400 != 0 {
-            return Err(format!("{} is a link; delete it and run install again", data.display()));
-        }
+    if !data_dir_trusted(&data)? {
+        // std's remove_dir_all deletes links themselves, never what they point at.
+        std::fs::remove_dir_all(&data).or_else(|_| std::fs::remove_file(&data)).map_err(|e| format!("{} was not created by NetStop and could not be removed: {e}", data.display()))?;
     }
+    std::fs::create_dir_all(&data).map_err(|e| format!("create {}: {e}", data.display()))?;
     let d = data.display().to_string();
-    run("icacls.exe", &[&d, "/setowner", "*S-1-5-32-544", "/T", "/C"])?;
-    run("icacls.exe", &[&d, "/reset", "/T", "/C"])?; // drops any explicit entries a planter added
+    // /L: act on links themselves, never their targets (defence in depth; the folder is trusted above).
+    run("icacls.exe", &[&d, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L"])?;
+    run("icacls.exe", &[&d, "/reset", "/T", "/C", "/L"])?; // drops explicit entries anyone added
     // SYSTEM + Administrators: full. Users: read only. Inheritance off so nothing looser applies.
-    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/T", "/C"])?;
+    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/T", "/C", "/L"])?;
     drop(crate::db::open_rw().map_err(|e| format!("create database: {e}"))?);
+    // The recorder's single-instance lock: users get no access at all, so they can't hold it open.
+    let lock = crate::recorder::lock_path();
+    std::fs::OpenOptions::new().create(true).append(true).open(&lock).map_err(|e| format!("create {}: {e}", lock.display()))?;
+    run("icacls.exe", &[&lock.display().to_string(), "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F", "/L"])?;
 
     let xml_path = data.join("task.xml");
     let mut bytes = vec![0xFF, 0xFE]; // schtasks wants UTF-16 LE with BOM
@@ -116,17 +149,19 @@ pub fn install() -> Result<String, String> {
         return Err(format!("registry write failed: {r:?}"));
     }
 
+    let start_menu = match crate::winutil::create_shortcut(&shortcut(), &exe) {
+        Ok(()) => "Start menu: NetStop".to_string(),
+        Err(e) => format!("Start menu shortcut not created ({e}); open {} directly", exe.display()),
+    };
     Ok(format!(
         "Installed to {}
 
 The recorder is running and starts at every boot.
 Data: {}
-
-Open the window: {}
+{start_menu}
 Chrome extension ID: {}",
         dir.display(),
         data.display(),
-        exe.display(),
         crate::nethost::EXTENSION_ID
     ))
 }
@@ -140,24 +175,20 @@ pub fn uninstall() -> Result<String, String> {
     unsafe {
         let _ = RegDeleteTreeW(HKEY_LOCAL_MACHINE, &HSTRING::from(HOST_KEY));
     }
+    let _ = std::fs::remove_file(shortcut());
+    let mut msg = String::from("NetStop removed: recorder, data, Start menu shortcut, extension bridge and all NetStop firewall blocks.");
     // Lift every block NetStop added, so nothing stays blocked by an app that is gone.
-    if let Ok(c) = crate::db::open_rw() {
-        for app in crate::db::blocked(&c) {
-            if let Err(e) = crate::firewall::set_blocked(&app, false) {
-                eprintln!("could not remove block for {app}: {e}");
-            }
-        }
+    if let Err(e) = crate::firewall::remove_all() {
+        msg.push_str(&format!("\n\nSome firewall rules could not be removed ({e}). Delete rules named \"NetStop block: …\" in Windows Firewall."));
     }
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    std::thread::sleep(std::time::Duration::from_secs(1)); // let the recorder release the database
     let data = crate::db::data_dir();
-    let _ = std::fs::remove_dir_all(&data);
+    if std::fs::remove_dir_all(&data).is_err() && data.exists() {
+        msg.push_str(&format!("\n\nDelete {} by hand.", data.display()));
+    }
     let dir = install_dir();
-    let _ = std::fs::remove_file(dir.join("chrome-host.json"));
-    let mut msg = String::from("NetStop removed: recorder, data, extension bridge and all NetStop firewall blocks.");
-    if std::fs::remove_dir_all(&dir).is_err() {
-        msg.push_str(&format!("
-
-Delete {} by hand once NetStop is closed.", dir.display()));
+    if std::fs::remove_dir_all(&dir).is_err() && dir.exists() {
+        msg.push_str(&format!("\n\nDelete {} by hand once NetStop is closed.", dir.display()));
     }
     Ok(msg)
 }

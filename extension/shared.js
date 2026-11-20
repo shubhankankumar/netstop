@@ -89,7 +89,8 @@ function notes(day) {
     const newApps = day.apps.filter((a) => a.is_new);
     const newHosts = day.hosts.filter((h) => h.is_new);
     if (newApps.length) out.push(["First time this week", newApps.slice(0, 3).map((a) => a.name).join(", ") + (newApps.length > 3 ? ` and ${newApps.length - 3} more` : ""), `${newApps.length} program${newApps.length > 1 ? "s" : ""}`]);
-    if (newHosts.length) out.push(["New sites", newHosts.slice(0, 2).map((h) => h.host).join(", ") + (newHosts.length > 2 ? ` and ${newHosts.length - 2} more` : ""), `${newHosts.length}`]);
+    const nNew = day.new_hosts ?? newHosts.length;
+    if (nNew) out.push(["New sites", newHosts.slice(0, 2).map((h) => h.host).join(", ") + (nNew > 2 ? ` and ${nNew - 2} more` : ""), `${nNew}`]);
   }
   const night = day.night.filter((a) => a.up + a.down > 0);
   if (night.length) {

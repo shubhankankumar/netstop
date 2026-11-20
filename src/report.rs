@@ -69,6 +69,9 @@ pub struct Day {
     pub hours: Vec<[u64; 2]>,
     pub apps: Vec<AppRow>,
     pub hosts: Vec<HostRow>,
+    /// Counts before any trimming (the browser popup gets shortened lists).
+    pub hosts_total: usize,
+    pub new_hosts: usize,
     /// Programs with traffic between midnight and 6 am.
     pub night: Vec<AppRow>,
     pub conns: Vec<ConnRow>,
@@ -182,6 +185,8 @@ pub fn day(c: &Connection, date: &str, conn_limit: usize) -> Result<Day, String>
         out.apps.iter_mut().chain(out.night.iter_mut()).for_each(|a| a.is_new = false);
         out.hosts.iter_mut().for_each(|h| h.is_new = false);
     }
+    out.hosts_total = out.hosts.len();
+    out.new_hosts = out.hosts.iter().filter(|h| h.is_new).count();
     Ok(out)
 }
 
@@ -233,6 +238,7 @@ mod tests {
         assert!(d.hosts.iter().find(|h| h.host == "new.com").unwrap().is_new);
         assert!(!d.hosts.iter().find(|h| h.host == "old.com").unwrap().is_new);
         assert_eq!(d.conns_total, 3);
+        assert_eq!((d.hosts_total, d.new_hosts), (2, 1));
         assert_eq!(human(1), "1 B");
         assert_eq!(human(1536), "1.5 KB");
         assert!(day(&c, "2026-13-01", 10).is_err());

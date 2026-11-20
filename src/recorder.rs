@@ -7,10 +7,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Held open with no sharing while the recorder runs. Lives in the admin-only data folder, with
+/// no user access at all (set at install), so another account can't hold it to stop recording.
+pub fn lock_path() -> std::path::PathBuf {
+    db::data_dir().join("recorder.lock")
+}
+
 pub fn run() -> Result<(), String> {
-    let Some(_guard) = crate::winutil::single_instance("Global\\NetStopRecorder") else {
-        return Err("recorder is already running".into());
-    };
+    use std::os::windows::fs::OpenOptionsExt;
+    if !db::data_dir().is_dir() {
+        return Err("NetStop is not installed (run: netstop install)".into());
+    }
+    let _lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .share_mode(0)
+        .open(lock_path())
+        .map_err(|e| format!("recorder is already running ({e})"))?;
     let mut conn = db::open_rw().map_err(|e| format!("open database: {e}"))?;
     let _ = db::prune(&conn);
 
@@ -32,8 +45,8 @@ pub fn run() -> Result<(), String> {
     let mut labeled: HashSet<Arc<str>> = HashSet::new();
     let mut last_prune = Instant::now();
     loop {
-        // shortcut: up to 15 s of counts are lost if the PC loses power; shorter flushes cost more disk writes.
-        std::thread::sleep(Duration::from_secs(15));
+        // shortcut: up to 5 s of counts are lost if the PC loses power; shorter flushes cost more disk writes.
+        std::thread::sleep(Duration::from_secs(5));
         let batch = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
         let labels: Vec<_> = batch
             .keys()
