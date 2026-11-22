@@ -193,14 +193,23 @@ const SERVICES: &[(&str, &str)] = &[
 /// shortcut: user-mode VPN clients only; kernel VPNs (WireGuard NT, IKEv2) show up as System. Add exe names as users report them.
 const TUNNELS: &[&str] = &["warp-svc.exe", "openvpn.exe", "tailscaled.exe"];
 
+/// Folders a VPN client must run from to be left out of totals. Admin-only, so a user's program
+/// named warp-svc.exe in Temp can't hide its traffic. Lowercase, with a trailing backslash.
+static TRUSTED_DIRS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    [crate::winutil::program_files(), crate::winutil::program_files_x86()].iter().map(|p| format!("{}\\", p.display()).to_ascii_lowercase()).collect()
+});
+
 pub fn is_tunnel(key: &str) -> bool {
     let (file, svc) = split_key(key);
-    svc.is_none() && TUNNELS.iter().any(|t| file.eq_ignore_ascii_case(t))
+    let lower = key.to_ascii_lowercase();
+    svc.is_none() && TUNNELS.iter().any(|t| file.eq_ignore_ascii_case(t)) && TRUSTED_DIRS.iter().any(|d| lower.starts_with(d.as_str()))
 }
 
-/// SQL condition, true for rows that are not VPN tunnel traffic. Built from the constant list only.
+/// SQL condition, true for rows that are not VPN tunnel traffic. Same rule as `is_tunnel`; built
+/// from constants and the admin-controlled Program Files paths (quotes doubled anyway).
 pub fn not_tunnel_sql() -> String {
-    TUNNELS.iter().map(|t| format!("lower(app) NOT LIKE '%\\{t}'")).collect::<Vec<_>>().join(" AND ")
+    let dirs = TRUSTED_DIRS.iter().map(|d| format!("substr(lower(app),1,{})='{}'", d.chars().count(), d.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+    TUNNELS.iter().map(|t| format!("NOT (lower(app) LIKE '%\\{t}' AND ({dirs}))")).collect::<Vec<_>>().join(" AND ")
 }
 
 fn lookup(table: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
@@ -262,5 +271,6 @@ mod tests {
         assert_eq!(plain("System", None), "Windows core (file sharing, drivers)");
         assert!(is_tunnel(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-svc.exe"));
         assert!(!is_tunnel(r"C:\x\notwarp-svc.exe"));
+        assert!(!is_tunnel(r"C:\Users\x\AppData\Local\Temp\warp-svc.exe")); // fake VPN outside Program Files
     }
 }

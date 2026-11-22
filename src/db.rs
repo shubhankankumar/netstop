@@ -33,6 +33,8 @@ pub fn open_rw() -> rusqlite::Result<Connection> {
     let c = Connection::open_with_flags(db_path(), OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
     c.busy_timeout(Duration::from_secs(5))?;
     c.execute_batch(SCHEMA)?;
+    // Hard size cap (~1 GB at 4 KB pages) so traffic floods can't fill the system drive.
+    c.pragma_update(None, "max_page_count", 262_144)?;
     Ok(c)
 }
 

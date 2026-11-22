@@ -81,6 +81,54 @@ fn data_dir_trusted(dir: &Path) -> Result<bool, String> {
     }
 }
 
+/// SYSTEM + Administrators: full. Installing user: read only. Protected, so nothing looser inherits.
+fn sddl(reader_sid: &str) -> String {
+    format!("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;{reader_sid})")
+}
+
+/// Creates `dir` with its final ACL in one call; fails if anything already exists there.
+fn create_locked_dir(dir: &Path, reader_sid: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows::Win32::Storage::FileSystem::CreateDirectoryW;
+    unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(&HSTRING::from(sddl(reader_sid)), 1, &mut sd, None).map_err(|e| format!("security descriptor: {e}"))?;
+        let sa = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd.0, bInheritHandle: false.into() };
+        let r = CreateDirectoryW(&HSTRING::from(dir.as_os_str()), Some(&sa));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        r.map_err(|e| format!("create {}: {e} (something else created it during install; run install again)", dir.display()))
+    }
+}
+
+/// Replaces an existing folder's owner and whole DACL with `sddl` in one call (icacls /grant:r would
+/// keep entries for anyone it doesn't name, e.g. an older install's Users:RX). The folder was checked
+/// to be a real folder, not a link, by `data_dir_trusted`.
+fn lock_dir(dir: &Path, reader_sid: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT, SetNamedSecurityInfoW};
+    use windows::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+    use windows::core::BOOL;
+    unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(&HSTRING::from(sddl(reader_sid)), 1, &mut sd, None).map_err(|e| format!("security descriptor: {e}"))?;
+        let (mut present, mut defaulted, mut dacl, mut owner) = (BOOL(0), BOOL(0), std::ptr::null_mut::<ACL>(), PSID::default());
+        let r = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted)
+            .and_then(|_| GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted))
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+                let e = SetNamedSecurityInfoW(&HSTRING::from(dir.as_os_str()), SE_FILE_OBJECT, info, Some(owner), None, Some(dacl), None);
+                if e == ERROR_SUCCESS { Ok(()) } else { Err(format!("{e:?}")) }
+            });
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        r.map_err(|e| format!("lock {}: {e}", dir.display()))
+    }
+}
+
 pub fn install() -> Result<String, String> {
     if !crate::winutil::is_admin() {
         return Err("Run this from an Administrator terminal.".into());
@@ -106,16 +154,6 @@ pub fn install() -> Result<String, String> {
         }
     }
 
-    let data = crate::db::data_dir();
-    if !data_dir_trusted(&data)? {
-        // std's remove_dir_all deletes links themselves, never what they point at.
-        std::fs::remove_dir_all(&data).or_else(|_| std::fs::remove_file(&data)).map_err(|e| format!("{} was not created by NetStop and could not be removed: {e}", data.display()))?;
-    }
-    std::fs::create_dir_all(&data).map_err(|e| format!("create {}: {e}", data.display()))?;
-    let d = data.display().to_string();
-    // /L: act on links themselves, never their targets (defence in depth; the folder is trusted above).
-    run("icacls.exe", &[&d, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L"])?;
-    run("icacls.exe", &[&d, "/reset", "/T", "/C", "/L"])?; // drops explicit entries anyone added
     // The history lists every site visited, so only the installing account may read it (for the
     // browser extension), not every account on the PC. whoami prints "domain\name","S-1-5-21-...".
     let out = Command::new(system32("whoami.exe")).args(["/user", "/fo", "csv", "/nh"]).output().map_err(|e| format!("whoami: {e}"))?;
@@ -123,18 +161,34 @@ pub fn install() -> Result<String, String> {
     if !me_sid.starts_with("S-1-") || me_sid.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
         return Err(format!("could not read your account ID from whoami ({me_sid:?})"));
     }
-    let reader = format!("*{me_sid}:(OI)(CI)RX");
-    // SYSTEM + Administrators: full. Installing user: read only. Inheritance off so nothing looser applies.
-    // Folder only, no /T: (OI)(CI) on an existing file leaves it with an empty ACL (nobody can open
-    // the DB on reinstall). The /reset above made every file inherit, so this flows down to them.
-    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", &reader, "/C", "/L"])?;
+
+    let data = crate::db::data_dir();
+    if !data_dir_trusted(&data)? {
+        // std's remove_dir_all deletes links themselves, never what they point at.
+        std::fs::remove_dir_all(&data).or_else(|_| std::fs::remove_file(&data)).map_err(|e| format!("{} was not created by NetStop and could not be removed: {e}", data.display()))?;
+    }
+    if !data.exists() {
+        // Born locked: a folder made with ProgramData's inherited ACL lets any user drop files in
+        // (and keep them open) before icacls runs.
+        create_locked_dir(&data, &me_sid)?;
+    } else {
+        // Existing folder from a previous install. Lock the folder itself first (one ACL write, never
+        // looser in between), then make everything inside inherit it. /L: act on links, not targets.
+        lock_dir(&data, &me_sid)?;
+        if std::fs::read_dir(&data).map_err(|e| e.to_string())?.next().is_some() {
+            let inside = data.join("*").display().to_string();
+            run("icacls.exe", &[&inside, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L"])?;
+            run("icacls.exe", &[&inside, "/reset", "/T", "/C", "/L"])?; // drops explicit entries anyone added
+        }
+    }
     drop(crate::db::open_rw().map_err(|e| format!("create database: {e}"))?);
     // The recorder's single-instance lock: users get no access at all, so they can't hold it open.
     let lock = crate::recorder::lock_path();
     std::fs::OpenOptions::new().create(true).append(true).open(&lock).map_err(|e| format!("create {}: {e}", lock.display()))?;
     run("icacls.exe", &[&lock.display().to_string(), "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F", "/L"])?;
 
-    let xml_path = data.join("task.xml");
+    // In Program Files (admin-only), never the data folder, so no user can swap it before schtasks reads it.
+    let xml_path = dir.join("task.xml");
     let mut bytes = vec![0xFF, 0xFE]; // schtasks wants UTF-16 LE with BOM
     task_xml(&exe).encode_utf16().for_each(|u| bytes.extend_from_slice(&u.to_le_bytes()));
     std::fs::write(&xml_path, bytes).map_err(|e| e.to_string())?;
@@ -205,4 +259,20 @@ pub fn uninstall() -> Result<String, String> {
         msg.push_str(&format!("\n\nDelete {} by hand once NetStop is closed.", dir.display()));
     }
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn data_folder_sddl_parses() {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+        use windows::Win32::Security::PSECURITY_DESCRIPTOR;
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let s = super::sddl("S-1-5-21-1-2-3-1001");
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(&windows::core::HSTRING::from(s), 1, &mut sd, None).unwrap();
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+        }
+    }
 }

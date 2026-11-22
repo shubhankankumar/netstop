@@ -230,23 +230,25 @@ mod tests {
         rows.insert(k(s + 30, r"C:\a\chrome.exe", "old.com"), (1, 2000));
         rows.insert(k(s + 400, r"C:\a\chrome.exe", "new.com"), (5, 5));
         rows.insert(k(s + 401, r"C:\a\sneaky.exe", "new.com"), (900, 0));
-        rows.insert(k(s + 402, r"C:\b\Warp-Svc.exe", "162.159.192.1"), (50, 50)); // VPN wrapper: listed, not summed
+        rows.insert(k(s + 402, r"C:\Program Files\b\Warp-Svc.exe", "162.159.192.1"), (50, 50)); // VPN wrapper: listed, not summed
+        rows.insert(k(s + 403, r"C:\tmp\warp-svc.exe", "x.com"), (7, 0)); // same name outside Program Files: counted
         crate::db::flush(&mut c, &rows, &[(Arc::from(r"C:\a\chrome.exe"), "Google Chrome".into())]).unwrap();
         crate::db::flush(&mut c, &rows, &[]).unwrap(); // second flush must add, not replace
 
         let d = day(&c, &today.format("%Y-%m-%d").to_string(), 10).unwrap();
         assert!(d.has_history);
-        assert_eq!((d.up, d.down), (2 * 906, 2 * 2005));
-        assert_eq!(d.apps.len(), 3);
-        assert!(d.apps.iter().any(|a| a.tunnel) && d.hours.iter().map(|h| h[0]).sum::<u64>() == d.up);
+        assert_eq!((d.up, d.down), (2 * 913, 2 * 2005));
+        assert_eq!(d.apps.len(), 4);
+        assert_eq!(d.apps.iter().filter(|a| a.tunnel).count(), 1);
+        assert!(d.hours.iter().map(|h| h[0]).sum::<u64>() == d.up);
         let chrome = d.apps.iter().find(|a| a.name == "Google Chrome").unwrap();
         assert!(!chrome.is_new);
         let sneaky = d.apps.iter().find(|a| a.app.ends_with("sneaky.exe")).unwrap();
         assert!(sneaky.is_new && sneaky.up == 1800);
         assert!(d.hosts.iter().find(|h| h.host == "new.com").unwrap().is_new);
         assert!(!d.hosts.iter().find(|h| h.host == "old.com").unwrap().is_new);
-        assert_eq!(d.conns_total, 4);
-        assert_eq!((d.hosts_total, d.new_hosts), (3, 2));
+        assert_eq!(d.conns_total, 5);
+        assert_eq!((d.hosts_total, d.new_hosts), (4, 3));
         assert_eq!(human(1), "1 B");
         assert_eq!(human(1536), "1.5 KB");
         assert!(day(&c, "2026-13-01", 10).is_err());

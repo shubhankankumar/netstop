@@ -80,16 +80,20 @@ pub fn answer(raw: &[u8]) -> String {
             day.night.truncate(5);
         }
         let s = serde_json::to_string(&day).unwrap_or_else(|_| err("encode failed"));
-        if s.len() <= MAX_OUT || limit == 0 {
+        if s.len() <= MAX_OUT {
             return s;
         }
-        limit /= 2; // too big for one message: send the biggest connections only
-        if limit < 50 {
-            day.hosts.truncate(500);
-            day.apps.truncate(500);
-            day.conns.clear();
-            return serde_json::to_string(&day).unwrap_or_else(|_| err("encode failed"));
+        if limit >= 100 {
+            limit /= 2; // too big for one message: send the biggest connections only
+            continue;
         }
+        day.hosts.truncate(500);
+        day.apps.truncate(500);
+        day.night.truncate(50);
+        day.conns.clear();
+        let s = serde_json::to_string(&day).unwrap_or_else(|_| err("encode failed"));
+        // Chrome drops anything bigger, which the extension would show as "not installed".
+        return if s.len() <= MAX_OUT { s } else { err("Today's report is too large to show here. Open the NetStop window.") };
     }
 }
 

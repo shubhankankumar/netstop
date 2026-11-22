@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Shell::{FOLDERID_CommonPrograms, FOLDERID_Downloads, FOLDERID_ProgramData, FOLDERID_ProgramFiles, IsUserAnAdmin, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath, ShellExecuteW};
+use windows::Win32::UI::Shell::{FOLDERID_CommonPrograms, FOLDERID_Downloads, FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, IsUserAnAdmin, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{GUID, HSTRING, PCWSTR};
 
@@ -31,6 +31,20 @@ pub fn program_data() -> PathBuf {
 
 pub fn program_files() -> PathBuf {
     known_folder(&FOLDERID_ProgramFiles, r"C:\Program Files")
+}
+
+pub fn program_files_x86() -> PathBuf {
+    known_folder(&FOLDERID_ProgramFilesX86, r"C:\Program Files (x86)")
+}
+
+/// This process's Windows logon session (0 if unknown).
+pub fn session_id() -> u32 {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    let mut s = 0;
+    unsafe {
+        let _ = ProcessIdToSessionId(std::process::id(), &mut s);
+    }
+    s
 }
 
 pub fn downloads() -> PathBuf {

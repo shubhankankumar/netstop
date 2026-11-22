@@ -57,6 +57,9 @@ fn classify(id: u16) -> Option<(Dir, u8)> {
 struct State {
     resolver: Resolver,
     dns: HashMap<IpAddr, Arc<str>>,
+    /// Answers seen by the process that asked. Preferred over `dns`, so one program looking up its own
+    /// domain (pointed at a shared CDN IP) can't rename other programs' traffic to that IP.
+    dns_pid: HashMap<(u32, IpAddr), Arc<str>>,
     local: HashSet<IpAddr>,
     local_at: Instant,
 }
@@ -87,7 +90,7 @@ pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 /// until the returned trace is dropped. Needs admin rights.
 pub fn start(name: &str, sink: Sink) -> Result<UserTrace, String> {
     let _ = stop_trace_by_name(name); // left over from a crash
-    let state = Arc::new(Mutex::new(State { resolver: Resolver::new(), dns: HashMap::new(), local: local_ips(), local_at: Instant::now() }));
+    let state = Arc::new(Mutex::new(State { resolver: Resolver::new(), dns: HashMap::new(), dns_pid: HashMap::new(), local: local_ips(), local_at: Instant::now() }));
 
     let st = state.clone();
     let net = Provider::by_guid(KERNEL_NETWORK)
@@ -131,7 +134,7 @@ pub fn start(name: &str, sink: Sink) -> Result<UserTrace, String> {
                     proto,
                     dir,
                     bytes: size,
-                    host: s.dns.get(&remote).cloned(),
+                    host: s.dns_pid.get(&(pid, remote)).or_else(|| s.dns.get(&remote)).cloned(),
                 }
             };
             sink(ev);
@@ -155,11 +158,14 @@ pub fn start(name: &str, sink: Sink) -> Result<UserTrace, String> {
             let name: Arc<str> = Arc::from(name);
             let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
             // shortcut: wipe the map at 100k entries instead of LRU; names come back on the next lookup.
-            if s.dns.len() > 100_000 {
+            if s.dns.len() > 100_000 || s.dns_pid.len() > 100_000 {
                 s.dns.clear();
+                s.dns_pid.clear();
             }
+            let pid = rec.process_id();
             for ip in dns_ips(&results) {
                 s.dns.insert(ip, name.clone());
+                s.dns_pid.insert((pid, ip), name.clone());
             }
         })
         .build();
