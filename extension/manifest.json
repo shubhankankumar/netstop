@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NetStop",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "What your laptop sent and received today, from the NetStop recorder.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz/vePeUfNQE6hKit8NiJqP8EGBQb6ZoV9QDksdKJZS1dS92G94xdUY1avZMSrYBh9mpl+9DJxCCiGzw4YnUl0MqWHIXtxm4UiyJPxabjXNyM0zSxU6xsoqRniTNITpbOadX1Eij9B5nH8fQOPEcpE+Z0bbgE7P2e0RB1f1NLE8g1AG+GLNywuMDpvbYJjfvME+6rBlV8P2qcHeHbMvszXKYyeRa6iSDDloB1Y7nJ8f5vvtsx/1kTI8aal7H22v6W9KmvUbaVnYEKMBGqe3KhBJYa+R6I9p4tMwqOjFRT13G2o3D/+TrAwg0/I/7M265zTnvxiozZATRvQChblI5rqwIDAQAB",
   "permissions": ["nativeMessaging"],
