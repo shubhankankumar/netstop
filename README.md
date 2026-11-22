@@ -2,7 +2,7 @@
 
 See every byte each program on this laptop sends and receives, block any of them, and look back over the last 7 days.
 
-- **Window** (`netstop.exe`): live list of programs with upload and download speed, a per-packet feed, the 7-day report and Block / Unblock buttons.
+- **Window** (`netstop.exe`): four tabs. **Now**: every program using the network since the window opened, with upload and download speed, what kind it is (app, background, Windows service, VPN, Windows itself) and its connections. **Live feed**: traffic as it happens. **History**: the recorder's last 7 days, by program, site or connection, sortable and filterable. **Blocked**: what you blocked. Block / Unblock sits next to every program.
 - **Recorder** (`netstop record`): starts at boot as SYSTEM, saves per-minute totals per program and site, and deletes anything older than 7 days.
 - **Chrome extension** (`extension/`): one click shows a summary of the day; "Open full report" opens every program, site and connection in a tab.
 
@@ -67,4 +67,4 @@ Without Visual Studio build tools, use the GNU toolchain with MSYS2's `gcc` on P
 
 Published downloads are built with `cargo build --profile dist` (full LTO: slower to build, smaller exe).
 
-`cargo test` covers names, the report queries, DNS parsing, the bridge's input checks, firewall rule names and CSV escaping. Live capture needs admin rights, so test it by running the window.
+`cargo test` covers names, the report queries, DNS parsing, the bridge's input checks and popup trimming, the recorder's per-minute row cap, firewall rule names, CSV escaping, and the window itself: every tab is driven headlessly through egui's accessibility tree (clicks, typing, right-click rename, Block / Unblock against a fake firewall). `NETSTOP_SHOTS=<folder> cargo test screenshots -- --ignored` renders every tab to PNGs, with this PC's real history if it has one. `node --test tests/extension.test.js` covers the extension's helpers. Live capture needs admin rights, so test it by running the window.

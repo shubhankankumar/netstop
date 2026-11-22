@@ -94,10 +94,10 @@ pub fn set_name(c: &Connection, app: &str, name: &str) -> rusqlite::Result<()> {
 
 pub fn names(c: &Connection) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    if let Ok(mut st) = c.prepare("SELECT app, name FROM names") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
-            out.extend(rows.flatten());
-        }
+    if let Ok(mut st) = c.prepare("SELECT app, name FROM names")
+        && let Ok(rows) = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    {
+        out.extend(rows.flatten());
     }
     out
 }

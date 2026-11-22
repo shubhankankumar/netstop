@@ -87,6 +87,7 @@ button.hour:focus-visible { outline: 2px solid var(--color-focus); outline-offse
 
 /* Tables (full report) */
 .grid { width: 100%; border-collapse: collapse; }
+.grid caption { caption-side: bottom; text-align: left; padding: var(--space-xs) var(--space-sm); color: var(--color-muted); font-size: var(--text-xs); }
 .grid th { text-align: left; font-weight: 600; color: var(--color-muted); font-size: var(--text-xs); padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--color-rule-2); white-space: nowrap; }
 .grid td { padding: 7px var(--space-sm); border-bottom: 1px solid var(--color-rule); vertical-align: top; }
 .grid tbody tr:last-child td { border-bottom: 0; }

@@ -33,12 +33,12 @@ function bytes(b) {
   if (b < 1024) return `${b} B`;
   const u = ["KB", "MB", "GB", "TB"];
   let v = b / 1024, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  while (v >= 1023.95 && i < u.length - 1) { v /= 1024; i++; }
   return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
 }
 
 function clock(unix) {
-  return new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 function dayLabel(date, days) {
@@ -62,8 +62,8 @@ function recorderStatus(lastWrite) {
 
 // 24 bars, upload stacked on download. Height via CSSOM (allowed under the page's CSP).
 function hourStrip(hours, onPick) {
-  const max = Math.max(1, ...hours.map((h) => h[0] + h[1]));
-  const now = new Date();
+  const peak = Math.max(0, ...hours.map((h) => h[0] + h[1]));
+  const max = Math.max(1, peak);
   const strip = el("div", { class: "hours", role: "group", "aria-label": "Traffic by hour" });
   hours.forEach((h, i) => {
     const hh = String(i).padStart(2, "0");
@@ -78,8 +78,8 @@ function hourStrip(hours, onPick) {
     col.dataset.hour = i;
     strip.append(col);
   });
-  const ticks = el("div", { class: "ticks", "aria-hidden": "true" }, ...["12 am", "6 am", "12 pm", "6 pm", ""].map((t) => el("span", {}, t)));
-  return el("div", { class: "hours-wrap" }, el("span", { class: "peak", "aria-hidden": "true" }, `peak ${bytes(max)}/h`), strip, ticks);
+  const ticks = el("div", { class: "ticks", "aria-hidden": "true" }, ...["00:00", "06:00", "12:00", "18:00", ""].map((t) => el("span", {}, t)));
+  return el("div", { class: "hours-wrap" }, el("span", { class: "peak", "aria-hidden": "true" }, `peak ${bytes(peak)}/h`), strip, ticks);
 }
 
 // Sent + received as one figure, with the split as a thin two-part bar.
@@ -132,7 +132,7 @@ function notes(day) {
   const night = day.night.filter((a) => a.up + a.down > 0 && !a.tunnel);
   if (night.length) {
     const t = night.reduce((s, a) => s + a.up + a.down, 0);
-    out.push(["Midnight to 6 am", night.slice(0, 2).map((a) => a.name).join(", ") + (night.length > 2 ? ` and ${night.length - 2} more` : ""), bytes(t)]);
+    out.push(["00:00 to 06:00", night.slice(0, 2).map((a) => a.name).join(", ") + (night.length > 2 ? ` and ${night.length - 2} more` : ""), bytes(t)]);
   }
   return out;
 }

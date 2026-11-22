@@ -6,9 +6,10 @@ const state = {
   date: /^\d{4}-\d{2}-\d{2}$/.test(params.get("date") || "") ? params.get("date") : todayStr(),
   q: params.get("q") || "",
   app: params.get("app") || "",
-  hour: params.has("hour") ? Number(params.get("hour")) : null,
+  hour: /^(1?\d|2[0-3])$/.test(params.get("hour") || "") ? Number(params.get("hour")) : null,
 };
 const sorts = {}; // table id -> { key, desc }
+const MAX_ROWS = 5000; // per table, so a day with huge site lists still renders quickly
 let day = null;
 const $ = (id) => document.getElementById(id);
 
@@ -43,8 +44,8 @@ function inHour(first, last) {
 
 // Sortable table. cols: [label, key, kind("text"|"num"|"bytes"|"time"), render?]
 function table(id, cols, rows, opts = {}) {
-  const sort = sorts[id] || { key: opts.sortKey || cols[1][1], desc: true };
-  const sorted = [...rows].sort((a, b) => {
+  const sort = sorts[id] || {};
+  const sorted = !sort.key ? rows : [...rows].sort((a, b) => {
     const x = a[sort.key], y = b[sort.key];
     const r = typeof x === "string" ? x.localeCompare(y) : x - y;
     return sort.desc ? -r : r;
@@ -55,12 +56,13 @@ function table(id, cols, rows, opts = {}) {
       el("button", { type: "button", class: "sort", on: { click: () => { sorts[id] = { key, desc: active ? !sort.desc : kind !== "text" }; render(); } } },
         label, active ? (sort.desc ? " ↓" : " ↑") : ""));
   }));
-  const body = sorted.slice(0, opts.limit || 5000).map((r) => el("tr", { class: opts.rowClass ? opts.rowClass(r) : null },
+  const body = sorted.slice(0, MAX_ROWS).map((r) => el("tr", { class: opts.rowClass ? opts.rowClass(r) : null },
     ...cols.map(([, key, kind, fn]) => {
       const v = fn ? fn(r) : kind === "bytes" ? bytes(r[key]) : kind === "time" ? clock(r[key]) : r[key];
       return el("td", { class: kind === "text" ? null : "num" }, v);
     })));
-  return el("table", { class: "grid", id }, el("thead", {}, head), el("tbody", {}, ...body));
+  const cut = rows.length > MAX_ROWS ? el("caption", {}, `Showing ${MAX_ROWS} of ${rows.length} rows. Filter to narrow it down.`) : null;
+  return el("table", { class: "grid", id }, cut, el("thead", {}, head), el("tbody", {}, ...body));
 }
 
 function section(title, count, content, note) {
@@ -111,7 +113,7 @@ function render() {
     filters,
     section("Programs", apps.length, table("t-apps", appCols, apps, { rowClass: (a) => (a.app === state.app ? "picked" : null) })),
     section("Sites", hosts.length, table("t-hosts", [["Site or address", "host", "text", (h) => el("span", { class: "cell" }, h.host, h.is_new && day.has_history ? el("span", { class: "tag" }, "new") : null)], ["Sent", "up", "bytes"], ["Received", "down", "bytes"], ["Programs", "apps", "num"]], hosts)),
-    section("Midnight to 6 am", day.night.length, day.night.length ? table("t-night", appCols, day.night) : el("p", { class: "note" }, "Nothing used the network overnight.")),
+    section("00:00 to 06:00", day.night.length, day.night.length ? table("t-night", appCols, day.night) : el("p", { class: "note" }, "Nothing used the network overnight.")),
     section("Every connection", conns.length, table("t-conns", [["Program", "name", "text", (c) => el("span", { title: c.app }, c.name)], ["Site or address", "host", "text"], ["Port", "port", "num", (c) => `${c.port} ${c.proto}`], ["Sent", "up", "bytes"], ["Received", "down", "bytes"], ["Active", "first", "time", active]], conns), truncated),
   );
 }
