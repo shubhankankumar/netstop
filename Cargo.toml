@@ -15,7 +15,13 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Th
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+incremental = true # rebuilds redo only what changed
 panic = "abort"
 strip = true
+
+# Published downloads: `cargo build --profile dist` (slow, smaller exe). Day-to-day builds use release.
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+incremental = false

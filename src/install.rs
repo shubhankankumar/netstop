@@ -92,12 +92,13 @@ pub fn install() -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     if me.canonicalize().ok() != exe.canonicalize().ok() {
         let mut ok = false;
-        for _ in 0..10 {
+        // The ended recorder releases the exe within a few hundred ms; poll quickly, give up after 5 s.
+        for _ in 0..100 {
             if std::fs::copy(&me, &exe).is_ok() {
                 ok = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         if !ok {
             return Err(format!("could not copy to {} (close NetStop windows and retry)", exe.display()));
@@ -115,7 +116,9 @@ pub fn install() -> Result<String, String> {
     run("icacls.exe", &[&d, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L"])?;
     run("icacls.exe", &[&d, "/reset", "/T", "/C", "/L"])?; // drops explicit entries anyone added
     // SYSTEM + Administrators: full. Users: read only. Inheritance off so nothing looser applies.
-    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/T", "/C", "/L"])?;
+    // Folder only, no /T: (OI)(CI) on an existing file leaves it with an empty ACL (nobody can open
+    // the DB on reinstall). The /reset above made every file inherit, so this flows down to them.
+    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/C", "/L"])?;
     drop(crate::db::open_rw().map_err(|e| format!("create database: {e}"))?);
     // The recorder's single-instance lock: users get no access at all, so they can't hold it open.
     let lock = crate::recorder::lock_path();
@@ -149,7 +152,9 @@ pub fn install() -> Result<String, String> {
         return Err(format!("registry write failed: {r:?}"));
     }
 
-    let start_menu = match crate::winutil::create_shortcut(&shortcut(), &exe) {
+    // The target never changes, so a reinstall keeps the existing shortcut (COM setup costs ~0.7 s).
+    let made = if shortcut().exists() { Ok(()) } else { crate::winutil::create_shortcut(&shortcut(), &exe) };
+    let start_menu = match made {
         Ok(()) => "Start menu: NetStop".to_string(),
         Err(e) => format!("Start menu shortcut not created ({e}); open {} directly", exe.display()),
     };

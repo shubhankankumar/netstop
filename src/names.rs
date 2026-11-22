@@ -14,6 +14,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("code.exe", "VS Code"),
     ("cursor.exe", "Cursor"),
     ("claude.exe", "Claude"),
+    ("warp-svc.exe", "Cloudflare WARP (VPN)"),
     ("onedrive.exe", "OneDrive (cloud file sync)"),
     ("filecoauth.exe", "Office file co-editing"),
     ("ms-teams.exe", "Microsoft Teams"),
@@ -187,6 +188,21 @@ const SERVICES: &[(&str, &str)] = &[
     ("sgrmbroker", "System integrity checks"),
 ];
 
+/// VPN clients whose own traffic is the encrypted copy of other programs' traffic. Counting both
+/// would double every total, so they are listed but left out of sums.
+/// shortcut: user-mode VPN clients only; kernel VPNs (WireGuard NT, IKEv2) show up as System. Add exe names as users report them.
+const TUNNELS: &[&str] = &["warp-svc.exe", "openvpn.exe", "tailscaled.exe"];
+
+pub fn is_tunnel(key: &str) -> bool {
+    let (file, svc) = split_key(key);
+    svc.is_none() && TUNNELS.iter().any(|t| file.eq_ignore_ascii_case(t))
+}
+
+/// SQL condition, true for rows that are not VPN tunnel traffic. Built from the constant list only.
+pub fn not_tunnel_sql() -> String {
+    TUNNELS.iter().map(|t| format!("lower(app) NOT LIKE '%\\{t}'")).collect::<Vec<_>>().join(" AND ")
+}
+
 fn lookup(table: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
     table.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
 }
@@ -244,5 +260,7 @@ mod tests {
         assert_eq!(plain(r"C:\x\Foo.exe", Some("Foo Helper")), "Foo Helper");
         assert_eq!(plain(r"C:\x\Foo.exe", None), "Foo");
         assert_eq!(plain("System", None), "Windows core (file sharing, drivers)");
+        assert!(is_tunnel(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-svc.exe"));
+        assert!(!is_tunnel(r"C:\x\notwarp-svc.exe"));
     }
 }

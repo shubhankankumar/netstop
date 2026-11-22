@@ -164,8 +164,9 @@ pub fn label(key: &str) -> String {
     crate::names::plain(key, desc.as_deref())
 }
 
-/// PIDs that own a visible, titled window. Anything else is running in the background.
-pub fn windowed_pids() -> HashSet<u32> {
+/// Exe paths that own a visible, titled window. Matched by program, not PID: browsers send
+/// from a windowless network-service child process.
+pub fn windowed_exes() -> HashSet<String> {
     unsafe extern "system" fn cb(h: HWND, l: LPARAM) -> BOOL {
         unsafe {
             if IsWindowVisible(h).as_bool() && GetWindowTextLengthW(h) > 0 {
@@ -180,7 +181,7 @@ pub fn windowed_pids() -> HashSet<u32> {
     unsafe {
         let _ = EnumWindows(Some(cb), LPARAM(&mut set as *mut _ as isize));
     }
-    set
+    set.into_iter().filter_map(image_path).collect()
 }
 
 /// This machine's own IP addresses (to tell local from remote, and skip PC-to-itself traffic).

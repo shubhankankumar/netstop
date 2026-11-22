@@ -6,19 +6,29 @@ See every byte each program on this laptop sends and receives, block any of them
 - **Recorder** (`netstop record`): starts at boot as SYSTEM, saves per-minute totals per program and site, and deletes anything older than 7 days.
 - **Chrome extension** (`extension/`): one click shows a summary of the day; "Open full report" opens every program, site and connection in a tab.
 
-## Install
+Everything stays on your PC. NetStop has no server, no account and no telemetry, and it never sends anything anywhere.
+
+## Install (Windows 10 or 11, 64-bit)
+
+1. Download `netstop.exe` and `netstop-extension.zip` from the [latest release](../../releases/latest).
+2. Double-click `netstop.exe`, approve the admin prompt and choose **Yes** to install.
+   - The exe isn't code-signed, so Windows SmartScreen may warn you. Click **More info**, then **Run anyway**. To check the file first, compare its SHA-256 (`Get-FileHash netstop.exe` in PowerShell) with the one in the release notes.
+3. From then on, open **NetStop** from the Start menu. The recorder runs in the background and starts with Windows.
+
+Install copies the exe to `C:\Program Files\NetStop`, locks down `C:\ProgramData\NetStop` (data folder), and registers the boot-time recorder and the browser bridge. Running `netstop install` from an admin terminal does the same thing.
+
+**Chrome extension (optional):** unzip `netstop-extension.zip` somewhere you'll keep it. Open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the unzipped folder. Its ID is fixed (`extension/ID`), and the bridge only answers that ID.
+
+**Update:** download the new `netstop.exe`, double-click it and choose **Yes**. Your history is kept.
+
+**Remove everything:** run `"C:\Program Files\NetStop\netstop.exe" uninstall`. This deletes the recorder, the data, the Start menu entry and every block NetStop added.
+
+### From source
 
 ```powershell
-# Administrator terminal, from this folder
 cargo build --release
 .\target\release\netstop.exe install
 ```
-
-`install` copies the exe to `C:\Program Files\NetStop`, locks down `C:\ProgramData\NetStop` (data folder), registers the boot-time recorder and the browser bridge. After that, open **NetStop** from the Start menu.
-
-Extension: open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the `extension` folder. Its ID is fixed (`extension/ID`), and the bridge only answers that ID.
-
-Remove everything: `netstop uninstall` (admin). This also deletes the data and every block NetStop added.
 
 ## How the counting works
 
@@ -40,8 +50,18 @@ Remove everything: `netstop uninstall` (admin). This also deletes the data and e
 - The extension asks for one permission (`nativeMessaging`), runs under a strict content security policy, loads no remote code or fonts, and places all text with `textContent`.
 - CSV exports prefix values that a spreadsheet would run as formulas.
 
+## Known limits
+
+- Windows only. Needs admin rights, because kernel network events require them.
+- VPNs: the Cloudflare WARP, OpenVPN and Tailscale clients are labelled "VPN" and left out of totals, since their traffic is a wrapped copy of everyone else's. Built-in Windows VPNs and WireGuard show up as "System" and are counted twice.
+- Apps with their own DNS (Chrome Secure DNS, WARP) show IP addresses instead of site names.
+- The browser bridge is registered for Chrome only.
+- A power cut loses up to the last 5 seconds of counts.
+
 ## Build notes
 
 Without Visual Studio build tools, use the GNU toolchain with MSYS2's `gcc` on PATH: run `rustup override set stable-x86_64-pc-windows-gnu` once in this folder. With Visual Studio Build Tools installed, plain `cargo build --release` works.
+
+Published downloads are built with `cargo build --profile dist` (full LTO: slower to build, smaller exe).
 
 `cargo test` covers names, the report queries, DNS parsing, the bridge's input checks, firewall rule names and CSV escaping. Live capture needs admin rights, so test it by running the window.

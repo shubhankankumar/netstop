@@ -38,6 +38,18 @@ fn main() {
                 }
                 return;
             }
+            // Started from a download (not the installed copy): offer to install, so people never need a terminal.
+            let me = std::env::current_exe().ok().and_then(|p| p.parent()?.canonicalize().ok());
+            if me.is_some() && me != install::install_dir().canonicalize().ok() && ask("Install NetStop (or update it)?
+
+It keeps recording after you close this window and starts with Windows. Choose No to just look this time.") {
+                match install::install() {
+                    Ok(m) => message(&m, true),
+                    Err(e) => message(&format!("NetStop install failed:
+
+{e}"), false),
+                }
+            }
             gui::run()
         }
         "record" => {
@@ -88,4 +100,10 @@ fn message(text: &str, ok: bool) {
     unsafe {
         MessageBoxW(None, &HSTRING::from(text), &HSTRING::from("NetStop"), MB_OK | icon);
     }
+}
+
+fn ask(text: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+    use windows::core::HSTRING;
+    unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from("NetStop"), MB_YESNO | MB_ICONQUESTION) == IDYES }
 }

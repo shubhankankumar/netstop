@@ -17,35 +17,34 @@ async function load() {
   $("day").textContent = dayLabel(date, days);
   $("prev").disabled = days.indexOf(date) >= days.length - 1;
   $("next").disabled = days.indexOf(date) <= 0;
-  const st = recorderStatus(day.recorder_last_write);
-  $("status").textContent = st.text;
-  $("status").classList.toggle("warn", st.warn);
+  $("status").replaceWith(Object.assign(statusLine(day.recorder_last_write), { id: "status" }));
 
   if (day.up + day.down === 0) {
     main.replaceChildren(el("p", { class: "state" }, "Nothing recorded on this day."));
     return;
   }
 
-  const totals = el("div", { class: "totals" },
-    el("div", {}, el("span", { class: "figure up" }, bytes(day.up)), el("span", { class: "cap" }, "sent")),
-    el("div", {}, el("span", { class: "figure" }, bytes(day.down)), el("span", { class: "cap" }, "received")));
+  const top = day.apps.slice(0, 6);
+  const biggest = Math.max(1, ...top.map((a) => a.up + a.down));
+  const list = el("ol", { class: "apps" }, ...top.map((a) => {
+    const bar = el("span", { class: "share", "aria-hidden": "true" }, el("span", { class: "bar-up" }), el("span", { class: "bar-down" }));
+    bar.style.width = `${((a.up + a.down) / biggest) * 100}%`;
+    bar.firstChild.style.flexGrow = a.up;
+    bar.lastChild.style.flexGrow = a.down;
+    return el("li", { title: a.app },
+      el("span", { class: "name" }, a.name, ...tags(a, day)),
+      el("span", { class: "n num" }, bytes(a.up + a.down)),
+      bar,
+      el("span", { class: "sub num" }, `↑ ${bytes(a.up)}  ↓ ${bytes(a.down)}`));
+  }));
 
+  const more = day.apps.length > 6 ? el("p", { class: "more" }, `${day.apps.length - 6} more programs and ${day.hosts_total} sites in the full report`) : null;
   const facts = notes(day);
-  const list = facts.length
-    ? el("dl", { class: "notes" }, ...facts.flatMap(([k, v, n]) => [el("dt", {}, k), el("dd", {}, el("span", { class: "who" }, v), el("span", { class: "num" }, n))]))
-    : null;
-
-  const rows = day.apps.slice(0, 6).map((a) =>
-    el("tr", {},
-      el("td", { class: "name", title: a.app }, a.name, a.is_new && day.has_history ? el("span", { class: "tag" }, "new") : null),
-      el("td", { class: "num up" }, bytes(a.up)),
-      el("td", { class: "num" }, bytes(a.down))));
-  const table = el("table", { class: "grid" },
-    el("thead", {}, el("tr", {}, el("th", { scope: "col" }, "Program"), el("th", { scope: "col", class: "num" }, "Sent"), el("th", { scope: "col", class: "num" }, "Received"))),
-    el("tbody", {}, ...rows));
-
-  const more = day.apps.length > 6 ? el("p", { class: "more" }, `${day.apps.length - 6} more programs, ${day.hosts_total} sites in the full report`) : null;
-  main.replaceChildren(totals, hourStrip(day.hours), list, table, more);
+  main.replaceChildren(
+    totalsBlock(day),
+    el("h2", { class: "label" }, "By hour"), hourStrip(day.hours),
+    facts.length ? el("h2", { class: "label" }, "Worth a look") : null, notesBlock(facts),
+    el("h2", { class: "label" }, "Top programs"), list, more);
 }
 
 function shift(by) {

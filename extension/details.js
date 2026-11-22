@@ -64,20 +64,19 @@ function table(id, cols, rows, opts = {}) {
 }
 
 function section(title, count, content, note) {
-  return el("section", { class: "block" },
-    el("div", { class: "block-head" }, el("h2", {}, title), el("span", { class: "count num" }, count)),
+  return el("section", { class: "card" },
+    el("div", { class: "card-head" }, el("h2", {}, title), el("span", { class: "count num" }, count)),
     note ? el("p", { class: "note" }, note) : null,
     content);
 }
 
 function appCell(a) {
   const pick = el("button", { type: "button", class: "link", title: a.app, on: { click: () => { state.app = state.app === a.app ? "" : a.app; saveUrl(); render(); } } }, a.name);
-  return el("span", { class: "cell" }, pick, a.is_new && day.has_history ? el("span", { class: "tag" }, "new") : null);
+  return el("span", { class: "cell" }, pick, ...tags(a, day));
 }
 
 function render() {
   const main = $("main");
-  const st = recorderStatus(day.recorder_last_write);
   const apps = day.apps.filter((a) => matches(a.name + " " + a.app) && inHour(a.first, a.last));
   const conns = day.conns.filter((c) => (!state.app || c.app === state.app) && matches(`${c.name} ${c.app} ${c.host}`) && inHour(c.first, c.last));
   const hostSet = state.app ? new Set(conns.map((c) => c.host)) : null;
@@ -88,15 +87,12 @@ function render() {
   if (state.hour !== null) strip.querySelector(`[data-hour="${state.hour}"]`)?.setAttribute("aria-pressed", "true");
 
   const summary = el("div", { class: "summary" },
-    el("div", { class: "totals" },
-      el("div", {}, el("span", { class: "figure up" }, bytes(day.up)), el("span", { class: "cap" }, "sent")),
-      el("div", {}, el("span", { class: "figure" }, bytes(day.down)), el("span", { class: "cap" }, "received")),
-      el("div", {}, el("span", { class: "figure" }, String(day.apps.length)), el("span", { class: "cap" }, "programs")),
-      el("div", {}, el("span", { class: "figure" }, String(day.hosts.length)), el("span", { class: "cap" }, "sites"))),
-    el("p", { class: `status${st.warn ? " warn" : ""}` }, st.text));
-
+    totalsBlock(day, [["Programs", String(day.apps.length)], ["Sites", String(day.hosts.length)]]),
+    statusLine(day.recorder_last_write));
   const facts = notes(day);
-  const factList = facts.length ? el("dl", { class: "notes wide" }, ...facts.flatMap(([k, v, n]) => [el("dt", {}, k), el("dd", {}, el("span", { class: "who" }, v), el("span", { class: "num" }, n))])) : null;
+  const chart = el("section", { class: "card chart" },
+    el("div", { class: "card-head" }, el("h2", {}, "By hour"), el("span", { class: "note" }, "Click an hour to narrow the tables")), strip);
+  const factList = facts.length ? el("section", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Worth a look")), notesBlock(facts)) : null;
 
   const filters = el("div", { class: "filters" },
     el("label", { for: "q" }, "Filter"),
@@ -111,8 +107,7 @@ function render() {
 
   main.replaceChildren(
     summary,
-    strip,
-    factList,
+    el("div", { class: "pair" }, chart, factList),
     filters,
     section("Programs", apps.length, table("t-apps", appCols, apps, { rowClass: (a) => (a.app === state.app ? "picked" : null) })),
     section("Sites", hosts.length, table("t-hosts", [["Site or address", "host", "text", (h) => el("span", { class: "cell" }, h.host, h.is_new && day.has_history ? el("span", { class: "tag" }, "new") : null)], ["Sent", "up", "bytes"], ["Received", "down", "bytes"], ["Programs", "apps", "num"]], hosts)),

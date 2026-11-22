@@ -104,7 +104,7 @@ pub struct App {
     adapter_prev: (u64, u64),
     other: (u64, u64),
     attributed_s: (u64, u64),
-    windowed: HashSet<u32>,
+    windowed: HashSet<String>,
     labels: HashMap<Arc<str>, String>,
     renames: HashMap<String, String>,
     selected: Option<Arc<str>>,
@@ -188,12 +188,12 @@ impl App {
         }
         let secs = self.tick.elapsed().as_secs_f64().max(1.0);
         self.tick = Instant::now();
-        self.windowed = crate::procinfo::windowed_pids();
+        self.windowed = crate::procinfo::windowed_exes();
         let snap: Vec<(Arc<str>, u64, u64, bool)> = {
             let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
             live.apps
                 .iter()
-                .map(|(k, a)| (k.clone(), a.up, a.down, k.contains('|') || !a.pids.iter().any(|p| self.windowed.contains(p))))
+                .map(|(k, a)| (k.clone(), a.up, a.down, k.contains('|') || !self.windowed.contains(&**k)))
                 .collect()
         };
         let mut rows = Vec::with_capacity(snap.len());
@@ -201,13 +201,17 @@ impl App {
         for (key, up, down, background) in snap {
             let (pu, pd) = self.prev.get(&key).copied().unwrap_or((up, down));
             let (up_s, down_s) = (((up - pu) as f64 / secs) as u64, ((down - pd) as f64 / secs) as u64);
-            au += up_s;
-            ad += down_s;
+            if !crate::names::is_tunnel(&key) {
+                au += up_s; // a VPN's own traffic is the wrapped copy of the rows it carries
+                ad += down_s;
+            }
             self.prev.insert(key.clone(), (up, down));
             let name = self.name(&key);
             rows.push(Row { key, name, up_s, down_s, up, down, background });
         }
-        rows.sort_by(|a, b| (b.up_s + b.down_s).cmp(&(a.up_s + a.down_s)).then((b.up + b.down).cmp(&(a.up + a.down))));
+        // By total, not by this second's rate: rows that reshuffle every second put the wrong
+        // program under the cursor when you click Block.
+        rows.sort_by(|a, b| (b.up + b.down).cmp(&(a.up + a.down)).then_with(|| a.key.cmp(&b.key)));
         self.rows = rows;
         self.attributed_s = (au, ad);
         let (rx, tx) = crate::procinfo::adapter_totals();
@@ -326,7 +330,9 @@ impl App {
                     num(&mut row, r.up, false);
                     num(&mut row, r.down, false);
                     row.col(|ui| {
-                        if r.background {
+                        if crate::names::is_tunnel(&r.key) {
+                            ui.label("VPN tunnel").on_hover_text("Carries the other programs' traffic, so it is not added to the totals");
+                        } else if r.background {
                             ui.label("Background");
                         } else {
                             ui.weak("Window");
@@ -430,6 +436,7 @@ impl App {
         TableBuilder::new(ui)
             .id_salt("feed")
             .striped(true)
+            .max_scroll_height(f32::INFINITY) // default cap is 800 px, leaving the bottom of the window empty
             .column(Column::exact(96.0))
             .column(Column::initial(240.0).clip(true))
             .column(Column::exact(44.0))
@@ -639,10 +646,11 @@ impl App {
     }
 
     fn app_table(&mut self, ui: &mut egui::Ui, id: &str, apps: &[report::AppRow]) {
+        let h = ui.available_height().max(360.0);
         TableBuilder::new(ui)
             .id_salt(id)
             .striped(true)
-            .max_scroll_height(360.0)
+            .max_scroll_height(h)
             .column(Column::remainder().at_least(220.0).clip(true))
             .columns(Column::exact(86.0), 2)
             .column(Column::exact(50.0))
@@ -673,7 +681,9 @@ impl App {
                         ui.monospace(format!("{}–{}", clock(a.first), clock(a.last + 59)));
                     });
                     row.col(|ui| {
-                        if a.is_new {
+                        if a.tunnel {
+                            ui.weak("VPN").on_hover_text("Carries the other programs' traffic, so it is not added to the totals");
+                        } else if a.is_new {
                             ui.label("new").on_hover_text("Not seen on any earlier day this week");
                         }
                     });
@@ -805,16 +815,16 @@ fn clock_ms(ms: i64) -> String {
 
 fn hours_strip(ui: &mut egui::Ui, hours: &[[u64; 2]]) {
     let max = hours.iter().map(|h| h[0] + h[1]).max().unwrap_or(0).max(1) as f32;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(720.0), 56.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 72.0), Sense::hover());
     let p = ui.painter_at(rect);
     let w = rect.width() / 24.0;
-    let base = ui.visuals().widgets.inactive.bg_fill;
+    let axis = ui.visuals().widgets.noninteractive.bg_stroke;
+    p.hline(rect.x_range(), rect.bottom() - 12.0, axis);
     let down_c = ui.visuals().selection.bg_fill;
     let up_c = up_color(ui);
     for (i, h) in hours.iter().enumerate() {
         let x = rect.left() + i as f32 * w;
         let col = egui::Rect::from_min_max(egui::pos2(x + 1.0, rect.top()), egui::pos2(x + w - 1.0, rect.bottom() - 12.0));
-        p.rect_filled(col, 1.0, base);
         let hd = col.height() * h[1] as f32 / max;
         let hu = col.height() * h[0] as f32 / max;
         p.rect_filled(egui::Rect::from_min_max(egui::pos2(col.left(), col.bottom() - hd), col.max), 0.0, down_c);

@@ -36,6 +36,8 @@ pub struct AppRow {
     pub first: i64,
     pub last: i64,
     pub is_new: bool,
+    /// A VPN client: its traffic is the wrapped copy of other rows, so it is left out of totals.
+    pub tunnel: bool,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -97,12 +99,14 @@ pub fn day(c: &Connection, date: &str, conn_limit: usize) -> Result<Day, String>
         .query_row("SELECT EXISTS(SELECT 1 FROM traffic WHERE minute < ?1)", [s], |r| r.get::<_, bool>(0))
         .map_err(q)?;
 
-    // Hourly strip, grouped by UTC hour then mapped to local hour (correct across DST).
-    let mut st = c.prepare("SELECT minute/60, SUM(up), SUM(down) FROM traffic WHERE minute>=?1 AND minute<?2 GROUP BY 1").map_err(q)?;
+    // Hourly strip, grouped by 15-minute block then mapped to local hour. Every real UTC offset
+    // (+5:30, +5:45, DST) is a multiple of 15 min, so a block never straddles two local hours.
+    let sql = format!("SELECT minute/15, SUM(up), SUM(down) FROM traffic WHERE minute>=?1 AND minute<?2 AND {} GROUP BY 1", crate::names::not_tunnel_sql());
+    let mut st = c.prepare(&sql).map_err(q)?;
     let rows = st.query_map([s, e], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).map_err(q)?;
     for row in rows {
-        let (h, up, down) = row.map_err(q)?;
-        let hour = Local.timestamp_opt(h * 3600, 0).single().map(|t| t.hour() as usize).unwrap_or(0);
+        let (b, up, down) = row.map_err(q)?;
+        let hour = Local.timestamp_opt(b * 900, 0).single().map(|t| t.hour() as usize).unwrap_or(0);
         out.hours[hour][0] += up as u64;
         out.hours[hour][1] += down as u64;
         out.up += up as u64;
@@ -127,6 +131,7 @@ pub fn day(c: &Connection, date: &str, conn_limit: usize) -> Result<Day, String>
                     first: r.get::<_, i64>(5)? * 60,
                     last: r.get::<_, i64>(6)? * 60,
                     is_new: r.get(7)?,
+                    tunnel: false,
                 })
             })
             .map_err(q)?;
@@ -134,6 +139,7 @@ pub fn day(c: &Connection, date: &str, conn_limit: usize) -> Result<Day, String>
     };
     out.apps = app_rows(s, e)?;
     out.night = app_rows(s, night_end)?;
+    out.apps.iter_mut().chain(out.night.iter_mut()).for_each(|a| a.tunnel = crate::names::is_tunnel(&a.app));
 
     let mut st = c
         .prepare(
@@ -224,21 +230,23 @@ mod tests {
         rows.insert(k(s + 30, r"C:\a\chrome.exe", "old.com"), (1, 2000));
         rows.insert(k(s + 400, r"C:\a\chrome.exe", "new.com"), (5, 5));
         rows.insert(k(s + 401, r"C:\a\sneaky.exe", "new.com"), (900, 0));
+        rows.insert(k(s + 402, r"C:\b\Warp-Svc.exe", "162.159.192.1"), (50, 50)); // VPN wrapper: listed, not summed
         crate::db::flush(&mut c, &rows, &[(Arc::from(r"C:\a\chrome.exe"), "Google Chrome".into())]).unwrap();
         crate::db::flush(&mut c, &rows, &[]).unwrap(); // second flush must add, not replace
 
         let d = day(&c, &today.format("%Y-%m-%d").to_string(), 10).unwrap();
         assert!(d.has_history);
         assert_eq!((d.up, d.down), (2 * 906, 2 * 2005));
-        assert_eq!(d.apps.len(), 2);
+        assert_eq!(d.apps.len(), 3);
+        assert!(d.apps.iter().any(|a| a.tunnel) && d.hours.iter().map(|h| h[0]).sum::<u64>() == d.up);
         let chrome = d.apps.iter().find(|a| a.name == "Google Chrome").unwrap();
         assert!(!chrome.is_new);
         let sneaky = d.apps.iter().find(|a| a.app.ends_with("sneaky.exe")).unwrap();
         assert!(sneaky.is_new && sneaky.up == 1800);
         assert!(d.hosts.iter().find(|h| h.host == "new.com").unwrap().is_new);
         assert!(!d.hosts.iter().find(|h| h.host == "old.com").unwrap().is_new);
-        assert_eq!(d.conns_total, 3);
-        assert_eq!((d.hosts_total, d.new_hosts), (2, 1));
+        assert_eq!(d.conns_total, 4);
+        assert_eq!((d.hosts_total, d.new_hosts), (3, 2));
         assert_eq!(human(1), "1 B");
         assert_eq!(human(1536), "1.5 KB");
         assert!(day(&c, "2026-13-01", 10).is_err());

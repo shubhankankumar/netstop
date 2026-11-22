@@ -63,36 +63,73 @@ function recorderStatus(lastWrite) {
 // 24 bars, upload stacked on download. Height via CSSOM (allowed under the page's CSP).
 function hourStrip(hours, onPick) {
   const max = Math.max(1, ...hours.map((h) => h[0] + h[1]));
+  const now = new Date();
   const strip = el("div", { class: "hours", role: "group", "aria-label": "Traffic by hour" });
   hours.forEach((h, i) => {
-    const label = `${String(i).padStart(2, "0")}:00 to ${String(i).padStart(2, "0")}:59: sent ${bytes(h[0])}, received ${bytes(h[1])}`;
-    const up = el("span", { class: "bar-up" });
-    const down = el("span", { class: "bar-down" });
-    up.style.height = `${(h[0] / max) * 100}%`;
-    down.style.height = `${(h[1] / max) * 100}%`;
+    const hh = String(i).padStart(2, "0");
+    const label = `${hh}:00 to ${hh}:59: sent ${bytes(h[0])}, received ${bytes(h[1])}`;
+    const stack = el("span", { class: "stack" }, el("span", { class: "bar-up" }), el("span", { class: "bar-down" }));
+    stack.style.height = h[0] + h[1] ? `max(2px, ${((h[0] + h[1]) / max) * 100}%)` : "0";
+    stack.firstChild.style.flexGrow = h[0];
+    stack.lastChild.style.flexGrow = h[1];
     const col = onPick
-      ? el("button", { class: "hour", type: "button", title: label, "aria-label": label, on: { click: () => onPick(i) } }, up, down)
-      : el("span", { class: "hour", title: label }, up, down);
+      ? el("button", { class: "hour", type: "button", title: label, "aria-label": label, on: { click: () => onPick(i) } }, stack)
+      : el("span", { class: "hour", title: label }, stack);
     col.dataset.hour = i;
     strip.append(col);
   });
-  const ticks = el("div", { class: "ticks", "aria-hidden": "true" }, "00", "06", "12", "18", "24");
-  return el("div", { class: "hours-wrap" }, strip, ticks);
+  const ticks = el("div", { class: "ticks", "aria-hidden": "true" }, ...["12 am", "6 am", "12 pm", "6 pm", ""].map((t) => el("span", {}, t)));
+  return el("div", { class: "hours-wrap" }, el("span", { class: "peak", "aria-hidden": "true" }, `peak ${bytes(max)}/h`), strip, ticks);
+}
+
+// Sent + received as one figure, with the split as a thin two-part bar.
+function totalsBlock(day, extra = []) {
+  const all = day.up + day.down;
+  const split = el("div", { class: "split", "aria-hidden": "true" }, el("span", { class: "bar-up" }), el("span", { class: "bar-down" }));
+  split.firstChild.style.flexGrow = day.up;
+  split.lastChild.style.flexGrow = day.down;
+  return el("div", { class: "totals" },
+    el("div", { class: "total" }, el("span", { class: "figure" }, bytes(all)), el("span", { class: "cap" }, "used in total")),
+    split,
+    el("div", { class: "legend" },
+      el("span", {}, el("i", { class: "dot up" }), "Sent ", el("b", { class: "num" }, bytes(day.up))),
+      el("span", {}, el("i", { class: "dot down" }), "Received ", el("b", { class: "num" }, bytes(day.down))),
+      ...extra.map(([k, v]) => el("span", {}, `${k} `, el("b", { class: "num" }, v)))));
+}
+
+function statusLine(lastWrite) {
+  const st = recorderStatus(lastWrite);
+  return el("p", { class: `status${st.warn ? " warn" : ""}` }, el("i", { class: "pulse" }), st.text);
+}
+
+// "new" / "VPN" badges after a program name.
+function tags(a, day) {
+  return [
+    a.tunnel ? el("span", { class: "tag muted", title: "A VPN carries the other programs' traffic, so it isn't added to the totals" }, "VPN, not in totals") : null,
+    a.is_new && day.has_history ? el("span", { class: "tag" }, "new") : null,
+  ];
+}
+
+function notesBlock(facts) {
+  if (!facts.length) return null;
+  return el("ul", { class: "notes" }, ...facts.map(([k, v, n]) =>
+    el("li", {}, el("span", { class: "k" }, k), el("span", { class: "who", title: v }, v), el("span", { class: "n num" }, n))));
 }
 
 // Short factual notes worth a look. Never alarmist: just what happened.
 function notes(day) {
   const out = [];
-  const topUp = [...day.apps].sort((a, b) => b.up - a.up)[0];
+  const topUp = day.apps.filter((a) => !a.tunnel).sort((a, b) => b.up - a.up)[0];
   if (topUp && topUp.up > 0) out.push(["Sent the most", `${topUp.name}`, bytes(topUp.up)]);
   if (day.has_history) {
     const newApps = day.apps.filter((a) => a.is_new);
-    const newHosts = day.hosts.filter((h) => h.is_new);
+    const isIp = (h) => /^[\d.]+$|:/.test(h);
+    const newHosts = day.hosts.filter((h) => h.is_new).sort((a, b) => isIp(a.host) - isIp(b.host));
     if (newApps.length) out.push(["First time this week", newApps.slice(0, 3).map((a) => a.name).join(", ") + (newApps.length > 3 ? ` and ${newApps.length - 3} more` : ""), `${newApps.length} program${newApps.length > 1 ? "s" : ""}`]);
     const nNew = day.new_hosts ?? newHosts.length;
     if (nNew) out.push(["New sites", newHosts.slice(0, 2).map((h) => h.host).join(", ") + (nNew > 2 ? ` and ${nNew - 2} more` : ""), `${nNew}`]);
   }
-  const night = day.night.filter((a) => a.up + a.down > 0);
+  const night = day.night.filter((a) => a.up + a.down > 0 && !a.tunnel);
   if (night.length) {
     const t = night.reduce((s, a) => s + a.up + a.down, 0);
     out.push(["Midnight to 6 am", night.slice(0, 2).map((a) => a.name).join(", ") + (night.length > 2 ? ` and ${night.length - 2} more` : ""), bytes(t)]);
