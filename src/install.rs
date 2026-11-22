@@ -1,7 +1,8 @@
 //! `netstop install` / `netstop uninstall` (run as admin).
 //! Security: the boot-time task runs as SYSTEM, so it must only ever point at a copy of the exe in
 //! Program Files (admin-only writable). The data folder is locked to admins + SYSTEM for writing,
-//! read-only for normal users (so the browser extension can read reports, but nothing can change them).
+//! read-only for the account that installed it (so its browser extension can read reports; other
+//! accounts on the PC can't, and nothing can change them).
 
 use crate::winutil::{program_files, system32};
 use std::path::{Path, PathBuf};
@@ -115,10 +116,18 @@ pub fn install() -> Result<String, String> {
     // /L: act on links themselves, never their targets (defence in depth; the folder is trusted above).
     run("icacls.exe", &[&d, "/setowner", "*S-1-5-32-544", "/T", "/C", "/L"])?;
     run("icacls.exe", &[&d, "/reset", "/T", "/C", "/L"])?; // drops explicit entries anyone added
-    // SYSTEM + Administrators: full. Users: read only. Inheritance off so nothing looser applies.
+    // The history lists every site visited, so only the installing account may read it (for the
+    // browser extension), not every account on the PC. whoami prints "domain\name","S-1-5-21-...".
+    let out = Command::new(system32("whoami.exe")).args(["/user", "/fo", "csv", "/nh"]).output().map_err(|e| format!("whoami: {e}"))?;
+    let me_sid = String::from_utf8_lossy(&out.stdout).trim().rsplit(',').next().unwrap_or("").trim_matches('"').to_string();
+    if !me_sid.starts_with("S-1-") || me_sid.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        return Err(format!("could not read your account ID from whoami ({me_sid:?})"));
+    }
+    let reader = format!("*{me_sid}:(OI)(CI)RX");
+    // SYSTEM + Administrators: full. Installing user: read only. Inheritance off so nothing looser applies.
     // Folder only, no /T: (OI)(CI) on an existing file leaves it with an empty ACL (nobody can open
     // the DB on reinstall). The /reset above made every file inherit, so this flows down to them.
-    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/C", "/L"])?;
+    run("icacls.exe", &[&d, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", &reader, "/C", "/L"])?;
     drop(crate::db::open_rw().map_err(|e| format!("create database: {e}"))?);
     // The recorder's single-instance lock: users get no access at all, so they can't hold it open.
     let lock = crate::recorder::lock_path();
