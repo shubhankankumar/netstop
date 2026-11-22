@@ -160,8 +160,11 @@ pub fn file_description(path: &str) -> Option<String> {
 /// Plain name for an app key, using the exe's description as a fallback.
 pub fn label(key: &str) -> String {
     let path = key.split('|').next().unwrap_or(key);
-    let desc = if path.contains('\\') { file_description(path) } else { None };
-    crate::names::plain(key, desc.as_deref())
+    // Never open a network path (\\host\share\x.exe): the recorder is SYSTEM and would send the
+    // PC's credentials to that host.
+    let desc = if path.contains('\\') && !path.starts_with(r"\\") { file_description(path) } else { None };
+    // Capped so a huge version string can't push the browser bridge's reply past Chrome's 1 MB limit.
+    crate::names::plain(key, desc.as_deref()).chars().take(200).collect()
 }
 
 /// Exe paths that own a visible, titled window. Matched by program, not PID: browsers send

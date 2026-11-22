@@ -134,7 +134,7 @@ impl App {
         let l = live.clone();
         let _ = cc;
         let (trace, capture_error) = match capture::start(
-            "NetStop-Live",
+            &format!("NetStop-Live-{}", crate::winutil::session_id()),
             Arc::new(move |e| {
                 l.lock().unwrap_or_else(|e| e.into_inner()).add(e);
             }),
@@ -867,8 +867,9 @@ fn export_csv(day: &Day) -> Result<String, String> {
 }
 
 pub fn run() -> Result<(), String> {
-    // Two windows would fight over the one live-capture session name.
-    let Some(_one) = crate::winutil::single_instance(r"Global\NetStopWindow") else {
+    // One window per logon session (they would fight over the live-capture session name). Local\,
+    // not Global\: other accounts can create Global\ names first and keep the window from opening.
+    let Some(_one) = crate::winutil::single_instance(r"Local\NetStopWindow") else {
         return Err("NetStop is already open.".into());
     };
     let opts = eframe::NativeOptions {

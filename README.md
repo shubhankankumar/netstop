@@ -44,17 +44,19 @@ cargo build --release
 - No network access and no listening ports anywhere. The browser bridge is Chrome native messaging (stdin/stdout), not a local web server, so web pages cannot reach it.
 - The bridge opens the database read-only, accepts one JSON request shape up to 4 KB, and checks the caller is the NetStop extension.
 - The boot task points only at the copy in Program Files (admin-only writable).
-- Only `install` creates the data folder. Anyone can create folders in ProgramData, so if one already exists and isn't owned by Administrators or SYSTEM, install deletes it first. That way, planted links can't redirect SYSTEM's writes. Afterwards admins and SYSTEM can write, the account that installed NetStop can only read, and other accounts on the PC can't open it at all.
+- Only `install` creates the data folder. Anyone can create folders in ProgramData, so if one already exists and isn't owned by Administrators or SYSTEM, install deletes it first. That way, planted links can't redirect SYSTEM's writes. A new data folder is created already locked, so there is no moment when other accounts can drop files into it. The boot task's XML is staged in Program Files, not ProgramData. Afterwards admins and SYSTEM can write, the account that installed NetStop can only read, and other accounts on the PC can't open it at all.
 - What is stored: program, site name or IP, port, and byte counts per minute. Never packet contents, so no passwords, messages or page data. History older than 7 days is deleted, so the database stays around 15 MB at most.
 - The recorder's single-instance lock is a file users can't open at all, so another account can't stop recording by holding it.
 - Blocking uses the Windows Firewall COM API (no shell commands). Rules are named `NetStop block: …` and are visible in Windows Firewall. The firewall is the only record of what is blocked, and uninstall removes every rule with that name.
 - The extension asks for one permission (`nativeMessaging`), runs under a strict content security policy, loads no remote code or fonts, and places all text with `textContent`.
 - CSV exports prefix values that a spreadsheet would run as formulas.
+- Storage is capped: at most 300 sites per program per minute (the rest are grouped as "many other addresses") and about 1 GB in total, so traffic floods can't fill the drive.
+- The recorder never opens program files on network shares, so it never sends this PC's credentials to another computer.
 
 ## Known limits
 
 - Windows only. Needs admin rights, because kernel network events require them.
-- VPNs: the Cloudflare WARP, OpenVPN and Tailscale clients are labelled "VPN" and left out of totals, since their traffic is a wrapped copy of everyone else's. Built-in Windows VPNs and WireGuard show up as "System" and are counted twice.
+- VPNs: the Cloudflare WARP, OpenVPN and Tailscale clients (only when they run from Program Files, so a look-alike name elsewhere is still counted) are labelled "VPN" and left out of totals, since their traffic is a wrapped copy of everyone else's. Built-in Windows VPNs and WireGuard show up as "System" and are counted twice.
 - Apps with their own DNS (Chrome Secure DNS, WARP) show IP addresses instead of site names.
 - The browser bridge is registered for Chrome only.
 - A power cut loses up to the last 5 seconds of counts.
