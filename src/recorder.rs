@@ -1,5 +1,5 @@
 //! Background recorder: runs from boot (scheduled task as SYSTEM), aggregates per minute in
-//! memory and writes to SQLite every 15 s. Makes no network connections and opens no ports.
+//! memory and writes to SQLite every 5 s. Makes no network connections and opens no ports.
 
 use crate::capture::{self, Dir};
 use crate::db::{self, Key};
@@ -7,13 +7,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Held open with no sharing while the recorder runs. Lives in the admin-only data folder, with
-/// no user access at all (set at install), so another account can't hold it to stop recording.
 const MAX_ROWS_PER_APP_MINUTE: usize = 300;
 const MAX_PENDING: usize = 200_000;
 /// Host name for traffic folded together once a program passes the per-minute row limit.
 pub const OTHER: &str = "(many other addresses)";
+/// (minute, program) -> the distinct (host, port, protocol) rows it has used that minute.
+type Seen = HashMap<(i64, Arc<str>), HashSet<(Arc<str>, u16, u8)>>;
 
+/// Held open with no sharing while the recorder runs. Lives in the admin-only data folder, with
+/// no user access at all (set at install), so another account can't hold it to stop recording.
 pub fn lock_path() -> std::path::PathBuf {
     db::data_dir().join("recorder.lock")
 }
@@ -35,24 +37,14 @@ pub fn run() -> Result<(), String> {
     let pending: Arc<Mutex<HashMap<Key, (u64, u64)>>> = Arc::default();
     // Distinct (host, port) rows per (minute, app) so far. Spoofed UDP sources would otherwise add
     // a row each and grow the database without limit.
-    let seen: Arc<Mutex<HashMap<(i64, Arc<str>), HashSet<(Arc<str>, u16, u8)>>>> = Arc::default();
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let other: Arc<str> = Arc::from(OTHER);
     let (p, s) = (pending.clone(), seen.clone());
     let _trace = capture::start(
         "NetStop-Recorder",
         Arc::new(move |e| {
             let mut k = Key { minute: e.unix_ms / 60_000, app: e.app.clone(), host: e.host_or_ip(), port: e.port, proto: e.proto };
-            {
-                let mut s = s.lock().unwrap_or_else(|e| e.into_inner());
-                let set = s.entry((k.minute, k.app.clone())).or_default();
-                if !set.contains(&(k.host.clone(), k.port, k.proto)) {
-                    if set.len() < MAX_ROWS_PER_APP_MINUTE {
-                        set.insert((k.host.clone(), k.port, k.proto));
-                    } else {
-                        (k.host, k.port) = (other.clone(), 0);
-                    }
-                }
-            }
+            cap(s.lock().unwrap_or_else(|e| e.into_inner()).entry((k.minute, k.app.clone())).or_default(), &mut k, &other);
             let mut m = p.lock().unwrap_or_else(|e| e.into_inner());
             let v = m.entry(k).or_default();
             match e.dir {
@@ -67,6 +59,12 @@ pub fn run() -> Result<(), String> {
     loop {
         // shortcut: up to 5 s of counts are lost if the PC loses power; shorter flushes cost more disk writes.
         std::thread::sleep(Duration::from_secs(5));
+        // Before the flush: a full database fails every flush, and only pruning frees space again.
+        if last_prune.elapsed() >= Duration::from_secs(3600) {
+            let _ = db::prune(&conn);
+            last_prune = Instant::now();
+            labeled.clear(); // prune drops labels of programs gone for 7 days; write them again if they return
+        }
         let batch = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
         let now_min = chrono::Utc::now().timestamp() / 60;
         seen.lock().unwrap_or_else(|e| e.into_inner()).retain(|(m, _), _| *m >= now_min - 2);
@@ -97,9 +95,42 @@ pub fn run() -> Result<(), String> {
             continue;
         }
         labeled.extend(labels.into_iter().map(|(a, _)| a));
-        if last_prune.elapsed() >= Duration::from_secs(3600) {
-            let _ = db::prune(&conn);
-            last_prune = Instant::now();
+    }
+}
+
+/// Keeps at most MAX_ROWS_PER_APP_MINUTE distinct (host, port, proto) rows per program per minute;
+/// anything past that is folded into one OTHER row. `seen` is that program's rows this minute.
+fn cap(seen: &mut HashSet<(Arc<str>, u16, u8)>, k: &mut Key, other: &Arc<str>) {
+    let row = (k.host.clone(), k.port, k.proto);
+    if seen.contains(&row) {
+        return;
+    }
+    if seen.len() < MAX_ROWS_PER_APP_MINUTE {
+        seen.insert(row);
+    } else {
+        (k.host, k.port) = (other.clone(), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn caps_rows_per_minute() {
+        let other: Arc<str> = Arc::from(OTHER);
+        let mut seen = HashSet::new();
+        let key = |i: u32| Key { minute: 1, app: Arc::from("a"), host: Arc::from(format!("10.0.{}.{}", i / 256, i % 256)), port: 53, proto: 17 };
+        for i in 0..MAX_ROWS_PER_APP_MINUTE as u32 {
+            let mut k = key(i);
+            cap(&mut seen, &mut k, &other);
+            assert_ne!(&*k.host, OTHER);
         }
+        let mut k = key(5); // already seen: keeps its own row
+        cap(&mut seen, &mut k, &other);
+        assert_eq!(&*k.host, "10.0.0.5");
+        let mut k = key(9999); // one too many: folded
+        cap(&mut seen, &mut k, &other);
+        assert_eq!((&*k.host, k.port), (OTHER, 0));
+        assert_eq!(seen.len(), MAX_ROWS_PER_APP_MINUTE);
     }
 }

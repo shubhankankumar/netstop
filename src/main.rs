@@ -6,6 +6,7 @@ mod db;
 mod firewall;
 mod gui;
 mod install;
+mod live;
 mod names;
 mod nethost;
 mod procinfo;
@@ -54,7 +55,8 @@ It keeps recording after you close this window and starts with Windows. Choose N
         }
         "record" => {
             winutil::attach_console();
-            recorder::run()
+            // Without this, a normal user sees "already running": the lock file denies them.
+            if winutil::is_admin() { recorder::run() } else { Err("record needs an Administrator terminal.".into()) }
         }
         "install" | "uninstall" => {
             winutil::attach_console();

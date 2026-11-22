@@ -95,6 +95,18 @@ pub fn relaunch_elevated(args: &str) -> bool {
     r.0 as isize > 32
 }
 
+/// The primary screen's area above the taskbar in egui points: [x, y, width, height]. Both calls
+/// see this process's DPI view (scaled or not) the same way, so their ratio is right either way.
+pub fn work_area_points() -> Option<[f32; 4]> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+    let mut r = RECT::default();
+    unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut r as *mut RECT as _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).ok()? };
+    let s = unsafe { GetDpiForSystem() } as f32 / 96.0;
+    (r.right > r.left && s > 0.0).then(|| [r.left as f32 / s, r.top as f32 / s, (r.right - r.left) as f32 / s, (r.bottom - r.top) as f32 / s])
+}
+
 /// Holds a named mutex for the process lifetime; None if another instance already holds it.
 pub fn single_instance(name: &str) -> Option<HANDLE> {
     unsafe {

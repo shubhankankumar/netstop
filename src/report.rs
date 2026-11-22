@@ -187,10 +187,21 @@ pub fn day(c: &Connection, date: &str, conn_limit: usize) -> Result<Day, String>
         .collect::<Result<_, _>>()
         .map_err(q)?;
 
+    // Two programs with one plain name would read as duplicates; give each a distinct one.
+    let renamed = crate::names::distinct_names(out.apps.iter().map(|a| (a.app.as_str(), a.name.as_str())));
+    let names = out.apps.iter_mut().chain(out.night.iter_mut()).map(|a| (&a.app, &mut a.name)).chain(out.conns.iter_mut().map(|c| (&c.app, &mut c.name)));
+    for (app, name) in names {
+        if let Some(n) = renamed.get(app) {
+            name.clone_from(n);
+        }
+    }
+
     if !out.has_history {
         out.apps.iter_mut().chain(out.night.iter_mut()).for_each(|a| a.is_new = false);
         out.hosts.iter_mut().for_each(|h| h.is_new = false);
     }
+    // The folded overflow bucket is not a site, so it is never "new".
+    out.hosts.iter_mut().filter(|h| h.host == crate::recorder::OTHER).for_each(|h| h.is_new = false);
     out.hosts_total = out.hosts.len();
     out.new_hosts = out.hosts.iter().filter(|h| h.is_new).count();
     Ok(out)
@@ -204,7 +215,8 @@ pub fn human(b: u64) -> String {
     }
     let mut v = b as f64;
     let mut i = 0;
-    while v >= 1024.0 && i < U.len() - 1 {
+    while v >= 1023.95 && i < U.len() - 1 {
+        // 1023.96 KB would print as "1024.0 KB"; show "1.0 MB" instead
         v /= 1024.0;
         i += 1;
     }
@@ -232,6 +244,7 @@ mod tests {
         rows.insert(k(s + 401, r"C:\a\sneaky.exe", "new.com"), (900, 0));
         rows.insert(k(s + 402, r"C:\Program Files\b\Warp-Svc.exe", "162.159.192.1"), (50, 50)); // VPN wrapper: listed, not summed
         rows.insert(k(s + 403, r"C:\tmp\warp-svc.exe", "x.com"), (7, 0)); // same name outside Program Files: counted
+        rows.insert(k(s + 404, r"C:\a\sneaky.exe", crate::recorder::OTHER), (0, 0)); // overflow bucket: never "new"
         crate::db::flush(&mut c, &rows, &[(Arc::from(r"C:\a\chrome.exe"), "Google Chrome".into())]).unwrap();
         crate::db::flush(&mut c, &rows, &[]).unwrap(); // second flush must add, not replace
 
@@ -247,10 +260,16 @@ mod tests {
         assert!(sneaky.is_new && sneaky.up == 1800);
         assert!(d.hosts.iter().find(|h| h.host == "new.com").unwrap().is_new);
         assert!(!d.hosts.iter().find(|h| h.host == "old.com").unwrap().is_new);
-        assert_eq!(d.conns_total, 5);
-        assert_eq!((d.hosts_total, d.new_hosts), (4, 3));
+        assert_eq!(d.conns_total, 6);
+        assert_eq!((d.hosts_total, d.new_hosts), (5, 3));
         assert_eq!(human(1), "1 B");
         assert_eq!(human(1536), "1.5 KB");
+        assert_eq!(human(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(human(u64::MAX), "16777216.0 TB");
         assert!(day(&c, "2026-13-01", 10).is_err());
+
+        // A day with nothing recorded: zeros, not an error.
+        let empty = day(&c, "2000-01-01", 10).unwrap();
+        assert_eq!((empty.up, empty.down, empty.apps.len(), empty.hours.len()), (0, 0, 0, 24));
     }
 }

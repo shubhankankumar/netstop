@@ -1,2 +1,6 @@
 target/
 STATUS.md
+
+# egui_kittest output
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png

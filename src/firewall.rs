@@ -24,7 +24,7 @@ pub fn blockable(app: &str) -> bool {
 
 /// One rule per (program, service). Outbound only: that stops data leaving, and replies to
 /// anything it would have sent.
-fn rules_for(app: &str) -> Vec<(String, String, Option<String>)> {
+pub(crate) fn rules_for(app: &str) -> Vec<(String, String, Option<String>)> {
     match app.split_once('|') {
         Some((path, svcs)) => svcs
             .split(',')

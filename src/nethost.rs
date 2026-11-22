@@ -56,28 +56,31 @@ pub fn answer(raw: &[u8]) -> String {
     if req.cmd != "day" {
         return err("unknown command");
     }
+    match crate::db::open_ro() {
+        Ok(conn) => reply(&conn, req),
+        Err(_) => err("No data yet. Is the NetStop recorder installed and running?"),
+    }
+}
+
+fn reply(conn: &rusqlite::Connection, req: Request) -> String {
     let date = req.date.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
-    let conn = match crate::db::open_ro() {
-        Ok(c) => c,
-        Err(_) => return err("No data yet. Is the NetStop recorder installed and running?"),
-    };
     let mut limit = if req.detail { 4000 } else { 0 };
     loop {
-        let mut day = match crate::report::day(&conn, &date, limit) {
+        let mut day = match crate::report::day(conn, &date, limit) {
             Ok(d) => d,
             Err(e) => return err(&e),
         };
         if !req.detail {
-            // Popup: top sites plus the first few new ones; true counts are in hosts_total / new_hosts.
-            let mut new_seen = 0;
-            let mut i = 0;
-            day.hosts.retain(|h| {
-                i += 1;
-                new_seen += h.is_new as usize;
-                i <= 8 || (h.is_new && new_seen <= 2)
-            });
+            // Popup: top 8 sites plus 2 new ones for "New sites", names before bare IPs (an IP says
+            // little). True counts are in hosts_total / new_hosts.
+            let mut keep: Vec<bool> = (0..day.hosts.len()).map(|i| i < 8).collect();
+            let mut new: Vec<usize> = (0..day.hosts.len()).filter(|&i| day.hosts[i].is_new).collect();
+            new.sort_by_key(|&i| day.hosts[i].host.parse::<std::net::IpAddr>().is_ok()); // stable: biggest first within each
+            new.iter().take(2).for_each(|&i| keep[i] = true);
+            let mut k = keep.into_iter();
+            day.hosts.retain(|_| k.next().unwrap_or(false));
             day.apps.truncate(300);
-            day.night.truncate(5);
+            day.night.truncate(300);
         }
         let s = serde_json::to_string(&day).unwrap_or_else(|_| err("encode failed"));
         if s.len() <= MAX_OUT {
@@ -107,5 +110,36 @@ mod tests {
         assert!(answer(b"not json").contains("bad request"));
         assert!(answer(br#"{"cmd":"drop table"}"#).contains("unknown command"));
         assert!(answer(br#"{"cmd":"day","sql":"x"}"#).contains("bad request"));
+        assert!(answer(br#"{"cmd":"day","date":"2026-02-30"}"#).contains("error"));
+    }
+
+    #[test]
+    fn popup_reply_is_trimmed_but_counts_stay_true() {
+        use std::sync::Arc;
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(crate::db::SCHEMA).unwrap();
+        let s = crate::report::local_midnight_days_ago(0) / 60;
+        let mut rows = std::collections::HashMap::new();
+        rows.insert(crate::db::Key { minute: s - 10, app: Arc::from(r"C:\old.exe"), host: Arc::from("old.com"), port: 443, proto: 6 }, (1, 1));
+        for i in 0..20u64 {
+            // 20 programs at 1 am, each to its own new site; s0.com is the smallest
+            let k = crate::db::Key { minute: s + 60, app: Arc::from(format!(r"C:\p{i}.exe")), host: Arc::from(format!("s{i}.com")), port: 443, proto: 6 };
+            rows.insert(k, (i + 1, 0));
+        }
+        for i in 0..8u64 {
+            // the 8 biggest sites are bare IPs, all new
+            rows.insert(crate::db::Key { minute: s + 60, app: Arc::from(r"C:\p0.exe"), host: Arc::from(format!("2404:6800::{i}")), port: 443, proto: 6 }, (1000 + i, 0));
+        }
+        crate::db::flush(&mut c, &rows, &[]).unwrap();
+        let date = crate::report::last_7_days()[0].clone();
+        let v: serde_json::Value = serde_json::from_str(&reply(&c, Request { cmd: "day".into(), date: Some(date.clone()), detail: false })).unwrap();
+        let hosts: Vec<&str> = v["hosts"].as_array().unwrap().iter().map(|h| h["host"].as_str().unwrap()).collect();
+        assert_eq!(hosts.len(), 10); // top 8 (all IPs) + the 2 biggest new names, so "New sites" can name them
+        assert!(hosts.contains(&"s19.com") && hosts.contains(&"s18.com"), "{hosts:?}");
+        assert_eq!((v["hosts_total"].as_u64(), v["new_hosts"].as_u64()), (Some(28), Some(28)));
+        assert_eq!(v["night"].as_array().unwrap().len(), 20); // all of them, so the popup's night total is right
+        assert!(v["conns"].as_array().unwrap().is_empty());
+        let v: serde_json::Value = serde_json::from_str(&reply(&c, Request { cmd: "day".into(), date: Some(date), detail: true })).unwrap();
+        assert_eq!((v["conns"].as_array().unwrap().len(), v["conns_total"].as_u64()), (28, Some(28)));
     }
 }

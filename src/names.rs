@@ -234,6 +234,24 @@ pub fn split_key(key: &str) -> (&str, Option<&str>) {
     (path.rsplit(['\\', '/']).next().unwrap_or(path), svc)
 }
 
+/// New names for programs whose plain names collide, so no two rows read the same: the exe file
+/// ("Defender antivirus (MpDefenderCoreService.exe)") or, for svchost, the services it hosts.
+/// Input: (app key, name) pairs. Output: key -> new name, only for keys that collide.
+pub fn distinct_names<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> std::collections::HashMap<String, String> {
+    let mut by_name: std::collections::HashMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+    for (key, name) in pairs {
+        by_name.entry(name).or_default().insert(key);
+    }
+    let mut out = std::collections::HashMap::new();
+    for (name, keys) in by_name.into_iter().filter(|(_, k)| k.len() > 1) {
+        for key in keys {
+            let (file, services) = split_key(key);
+            out.insert(key.to_string(), format!("{name} ({})", services.unwrap_or(file)));
+        }
+    }
+    out
+}
+
 /// Plain name for an app key. `description` is the exe's FileDescription, if known.
 pub fn plain(key: &str, description: Option<&str>) -> String {
     if let Some(pid) = key.strip_prefix("pid:") {
@@ -272,5 +290,16 @@ mod tests {
         assert!(is_tunnel(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-svc.exe"));
         assert!(!is_tunnel(r"C:\x\notwarp-svc.exe"));
         assert!(!is_tunnel(r"C:\Users\x\AppData\Local\Temp\warp-svc.exe")); // fake VPN outside Program Files
+
+        let m = distinct_names([
+            (r"C:\d\MsMpEng.exe", "Defender antivirus"),
+            (r"C:\d\MpDefenderCoreService.exe", "Defender antivirus"),
+            (r"C:\w\svchost.exe|CDPUserSvc_1", "Windows service: Connected devices"),
+            (r"C:\w\svchost.exe|CDPUserSvc_2", "Windows service: Connected devices"),
+            (r"C:\a\chrome.exe", "Google Chrome"),
+        ]);
+        assert_eq!(m.len(), 4, "Chrome is unique and keeps its name");
+        assert_eq!(m[r"C:\d\MpDefenderCoreService.exe"], "Defender antivirus (MpDefenderCoreService.exe)");
+        assert_eq!(m[r"C:\w\svchost.exe|CDPUserSvc_2"], "Windows service: Connected devices (CDPUserSvc_2)");
     }
 }

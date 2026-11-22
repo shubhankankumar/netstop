@@ -32,10 +32,10 @@ impl Resolver {
 
     pub fn resolve(&mut self, pid: u32) -> Arc<str> {
         let now = Instant::now();
-        if let Some((k, recheck)) = self.cache.get(&pid) {
-            if recheck.is_none_or(|t| now < t) {
-                return k.clone();
-            }
+        if let Some((k, recheck)) = self.cache.get(&pid)
+            && recheck.is_none_or(|t| now < t)
+        {
+            return k.clone();
         }
         self.lookup(pid, None, now)
     }
