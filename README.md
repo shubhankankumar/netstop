@@ -1,70 +1,118 @@
 # NetStop
 
-See every byte each program on this laptop sends and receives, block any of them, and look back over the last 7 days.
+NetStop shows which programs on your Windows PC are using the network, how much each one sends and receives, and where that traffic goes. You can block any program with one click, and it keeps 7 days of history so you can look back at what happened yesterday or last week.
 
-- **Window** (`netstop.exe`): four tabs. **Now**: every program using the network since the window opened, with upload and download speed, what kind it is (app, background, Windows service, VPN, Windows itself) and its connections. **Live feed**: traffic as it happens. **History**: the recorder's last 7 days, by program, site or connection, sortable and filterable. **Blocked**: what you blocked. Block / Unblock sits next to every program.
-- **Recorder** (`netstop record`): starts at boot as SYSTEM, saves per-minute totals per program and site, and deletes anything older than 7 days.
-- **Chrome extension** (`extension/`): one click shows a summary of the day; "Open full report" opens every program, site and connection in a tab.
+Everything stays on your PC. There is no server, no account and no telemetry.
 
-Everything stays on your PC. NetStop has no server, no account and no telemetry, and it never sends anything anywhere.
+## Install
 
-## Install (Windows 10 or 11, 64-bit)
+You need Windows 10 or 11, 64-bit.
 
-1. Download `netstop.exe` and `netstop-extension.zip` from the [latest release](../../releases/latest).
-2. Double-click `netstop.exe`, approve the admin prompt and choose **Yes** to install.
-   - The exe isn't code-signed, so Windows SmartScreen may warn you. Click **More info**, then **Run anyway**. To check the file first, compare its SHA-256 (`Get-FileHash netstop.exe` in PowerShell) with the one in the release notes.
-3. From then on, open **NetStop** from the Start menu. The recorder runs in the background and starts with Windows.
+1. Download `netstop.exe` from the [latest release](../../releases/latest).
+2. Double-click it, accept the admin prompt, and choose **Yes** when it offers to install.
+3. From then on, open NetStop from the Start menu. The recorder keeps running after you close the window and starts with Windows.
 
-Install copies the exe to `C:\Program Files\NetStop`, locks down `C:\ProgramData\NetStop` (data folder), and registers the boot-time recorder and the browser bridge. Running `netstop install` from an admin terminal does the same thing.
+The exe isn't code-signed yet, so SmartScreen will probably warn you. Click **More info**, then **Run anyway**. To verify the download, run `Get-FileHash netstop.exe` in PowerShell and compare the result with the SHA-256 in the release notes.
 
-**Chrome extension (optional):** unzip `netstop-extension.zip` somewhere you'll keep it. Open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the unzipped folder. Its ID is fixed (`extension/ID`), and the bridge only answers that ID.
+To **update**, download the new exe, double-click it and choose **Yes**. Your history is kept.
 
-**Update:** download the new `netstop.exe`, double-click it and choose **Yes**. Your history is kept.
+To **uninstall**, run:
 
-**Remove everything:** run `"C:\Program Files\NetStop\netstop.exe" uninstall`. This deletes the recorder, the data, the Start menu entry and every block NetStop added.
+```powershell
+& "C:\Program Files\NetStop\netstop.exe" uninstall
+```
 
-### From source
+This removes the recorder, the data, the Start menu shortcut and every firewall rule NetStop created.
+
+## Usage
+
+The window has four tabs:
+
+1. **Now** lists every program that has used the network since the window opened, with its upload and download speed, its connections, and what kind of program it is: an app, a background process, a Windows service, a VPN, or Windows itself.
+2. **Live feed** shows traffic as it happens.
+3. **History** shows the last 7 days, grouped by program, site or connection. You can sort and filter it, and export any day to a CSV file in your Downloads folder.
+4. **Blocked** lists everything you've blocked.
+
+Every program has a **Block** button next to it. Blocking adds a Windows Firewall rule named `NetStop block: …`, so you can also see and remove it in Windows Firewall.
+
+Right-click any program name to rename it.
+
+### Chrome extension (optional)
+
+The extension shows a summary of today's traffic in a popup, lets you step back through earlier days, and opens the full report in a tab.
+
+1. Download `netstop-extension.zip` from the same release and unzip it somewhere permanent.
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Click **Load unpacked** and select the unzipped folder.
+
+## How it works
+
+NetStop has three parts in one exe:
+
+```
+netstop            the window (asks for admin)
+netstop record     the recorder, started at boot as SYSTEM
+netstop install    sets up the recorder and the browser bridge
+netstop uninstall  removes everything NetStop added
+```
+
+**Counting.** Windows already reports every TCP and UDP send and receive through ETW kernel network events, each with a process ID, a byte count and a kernel timestamp. NetStop listens to those events. It installs no driver and never sits in the data path.
+
+**Naming programs.** Each process is named the moment it starts, from kernel process events. A program that runs for half a second still gets the right name, and a reused process ID never inherits an old one. Friendly names come from a built-in table in `src/names.rs`, or from the exe's own description.
+
+**Naming sites.** IP addresses are matched to domain names using Windows DNS client events, so you see `chrome.exe → youtube.com` instead of a bare IP.
+
+**Making the totals add up.** The row called "Headers, ping, ARP and other" is your network adapter's total minus everything matched to a program. That way the window always adds up to what actually went over the wire. Localhost traffic is ignored because it never leaves the machine.
+
+**Storage.** The recorder writes per-minute totals for each program and site to a local SQLite database and deletes anything older than 7 days, which keeps it under about 15 MB. Packet contents are never stored.
+
+## Security
+
+The window and recorder run with high privileges, so NetStop is built to give nothing away:
+
+* **No network surface.** NetStop opens no connections and listens on no ports. The browser bridge uses Chrome native messaging over stdin and stdout, so web pages can't reach it. It opens the database read-only, accepts one JSON request shape up to 4 KB, and only answers the NetStop extension's fixed ID.
+* **Locked-down files.** The boot task only runs the copy in Program Files, which only admins can write. The data folder in ProgramData is created already locked: admins and SYSTEM can write, the installing user can read, and other accounts can't open it. If a folder with that name already exists and isn't owned by Administrators or SYSTEM, install deletes it first, so planted links can't redirect SYSTEM's writes.
+* **No shell commands.** Blocking goes through the Windows Firewall COM API.
+* **Bounded storage.** At most 300 sites per program per minute (the rest are grouped as "many other addresses") and about 1 GB in total, so a traffic flood can't fill your disk.
+* **Other details.** The recorder's lock file can't be opened by normal users, so another account can't stop recording. It never opens program files on network shares, so it never sends this PC's credentials to another machine. CSV exports escape values a spreadsheet would run as formulas. The extension requests only `nativeMessaging`, runs under a strict CSP, loads nothing remote, and writes all text with `textContent`.
+
+## Known limitations
+
+* Windows only, and it needs admin rights, because Windows only gives kernel network events to admins.
+* The Cloudflare WARP, OpenVPN and Tailscale clients are labelled VPN and excluded from totals, since their traffic is a wrapped copy of everyone else's. This only applies when they run from Program Files, so a lookalike elsewhere is still counted. Windows' built-in VPN and WireGuard show up as System and are counted twice.
+* Apps that do their own encrypted DNS, like Chrome's Secure DNS or Firefox with DoH, show IP addresses instead of site names.
+* The browser bridge is only registered for Chrome.
+* A power cut can lose up to the last 5 seconds of counts.
+
+## Building from source
 
 ```powershell
 cargo build --release
 .\target\release\netstop.exe install
 ```
 
-## How the counting works
+Without the Visual Studio build tools, use the GNU toolchain with MSYS2's `gcc` on your PATH. Run this once inside the repo:
 
-- Per-program bytes come from Windows' own kernel network events (ETW, `Microsoft-Windows-Kernel-Network`): one event per TCP/UDP send or receive, with the process ID, payload size and the kernel's own timestamp. No driver is installed and nothing sits in the data path.
-- Every process is named the moment it starts (`Microsoft-Windows-Kernel-Process` events), so programs that run for a split second are still named, and a reused process ID never inherits an old name.
-- IPs become names from Windows' DNS-Client events (`chrome.exe → youtube.com`). Apps that use their own encrypted DNS (Chrome's "Secure DNS", Firefox DoH) show IP addresses instead.
-- The "Headers, ping, ARP and other" line is the Wi-Fi/Ethernet adapter total minus everything attributed to programs, so the window always adds up to what really went over the wire.
-- Traffic between the laptop and itself (localhost) is ignored: it never leaves the machine.
-- Plain names: a built-in table (`src/names.rs`) for common Windows parts, services and apps; otherwise the exe's description; right-click any name to rename it.
+```powershell
+rustup override set stable-x86_64-pc-windows-gnu
+```
 
-## Security
+Release downloads are built with `cargo build --profile dist`, which enables full LTO for a smaller exe at the cost of a slower build.
 
-- No network access and no listening ports anywhere. The browser bridge is Chrome native messaging (stdin/stdout), not a local web server, so web pages cannot reach it.
-- The bridge opens the database read-only, accepts one JSON request shape up to 4 KB, and checks the caller is the NetStop extension.
-- The boot task points only at the copy in Program Files (admin-only writable).
-- Only `install` creates the data folder. Anyone can create folders in ProgramData, so if one already exists and isn't owned by Administrators or SYSTEM, install deletes it first. That way, planted links can't redirect SYSTEM's writes. A new data folder is created already locked, so there is no moment when other accounts can drop files into it. The boot task's XML is staged in Program Files, not ProgramData. Afterwards admins and SYSTEM can write, the account that installed NetStop can only read, and other accounts on the PC can't open it at all.
-- What is stored: program, site name or IP, port, and byte counts per minute. Never packet contents, so no passwords, messages or page data. History older than 7 days is deleted, so the database stays around 15 MB at most.
-- The recorder's single-instance lock is a file users can't open at all, so another account can't stop recording by holding it.
-- Blocking uses the Windows Firewall COM API (no shell commands). Rules are named `NetStop block: …` and are visible in Windows Firewall. The firewall is the only record of what is blocked, and uninstall removes every rule with that name.
-- The extension asks for one permission (`nativeMessaging`), runs under a strict content security policy, loads no remote code or fonts, and places all text with `textContent`.
-- CSV exports prefix values that a spreadsheet would run as formulas.
-- Storage is capped: at most 300 sites per program per minute (the rest are grouped as "many other addresses") and about 1 GB in total, so traffic floods can't fill the drive.
-- The recorder never opens program files on network shares, so it never sends this PC's credentials to another computer.
+## Tests
 
-## Known limits
+```powershell
+cargo test                          # Rust tests
+node --test tests/extension.test.js # extension helpers
+```
 
-- Windows only. Needs admin rights, because kernel network events require them.
-- VPNs: the Cloudflare WARP, OpenVPN and Tailscale clients (only when they run from Program Files, so a look-alike name elsewhere is still counted) are labelled "VPN" and left out of totals, since their traffic is a wrapped copy of everyone else's. Built-in Windows VPNs and WireGuard show up as "System" and are counted twice.
-- Apps with their own DNS (Chrome Secure DNS, WARP) show IP addresses instead of site names.
-- The browser bridge is registered for Chrome only.
-- A power cut loses up to the last 5 seconds of counts.
+The Rust tests cover the name table, report queries, DNS parsing, the bridge's input checks, the per-minute row cap, firewall rule names and CSV escaping. They also drive every tab of the window headlessly through egui's accessibility tree, including clicking, typing, renaming, and blocking against a fake firewall.
 
-## Build notes
+To render every tab to PNG files, using this PC's real history if there is any:
 
-Without Visual Studio build tools, use the GNU toolchain with MSYS2's `gcc` on PATH: run `rustup override set stable-x86_64-pc-windows-gnu` once in this folder. With Visual Studio Build Tools installed, plain `cargo build --release` works.
+```powershell
+$env:NETSTOP_SHOTS = "shots"
+cargo test screenshots -- --ignored
+```
 
-Published downloads are built with `cargo build --profile dist` (full LTO: slower to build, smaller exe).
-
-`cargo test` covers names, the report queries, DNS parsing, the bridge's input checks and popup trimming, the recorder's per-minute row cap, firewall rule names, CSV escaping, and the window itself: every tab is driven headlessly through egui's accessibility tree (clicks, typing, right-click rename, Block / Unblock against a fake firewall). `NETSTOP_SHOTS=<folder> cargo test screenshots -- --ignored` renders every tab to PNGs, with this PC's real history if it has one. `node --test tests/extension.test.js` covers the extension's helpers. Live capture needs admin rights, so test it by running the window.
+Live capture needs admin rights, so test that part by running the window.
